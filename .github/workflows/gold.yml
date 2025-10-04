@@ -134,7 +134,7 @@ jobs:
 
     # 上传构建好的内核包
     - name: Upload Kernel Package
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v3
       with:
         name: kernel-package
         path: $ANYKERNEL_DIR/*.zip
