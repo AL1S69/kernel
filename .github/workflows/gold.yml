@@ -36,7 +36,7 @@ jobs:
           gcc-arm-linux-gnueabihf \
           gcc-aarch64-linux-gnu
 
-    # 设置变量
+    # 设置变量并输出调试信息
     - name: Set up kernel version and paths
       run: |
         export BUILD_DIR="$GITHUB_WORKSPACE/kernel_build"
@@ -47,11 +47,18 @@ jobs:
         export TOOLCHAIN_AARCH64="/usr/bin/aarch64-linux-gnu-"
         export TOOLCHAIN_ARM="/usr/bin/arm-linux-gnueabihf-"
         export KERNEL_VERSION="${{ github.event.inputs.kernel_version }}"
+        
+        # 输出调试信息
+        echo "BUILD_DIR=$BUILD_DIR"
+        echo "KERNEL_SRC_DIR=$KERNEL_SRC_DIR"
+        echo "OUT_DIR=$OUT_DIR"
+        echo "ANYKERNEL_DIR=$ANYKERNEL_DIR"
+        echo "KERNEL_REPO=$KERNEL_REPO"
+        echo "TOOLCHAIN_AARCH64=$TOOLCHAIN_AARCH64"
+        echo "TOOLCHAIN_ARM=$TOOLCHAIN_ARM"
+        echo "KERNEL_VERSION=$KERNEL_VERSION"
+        
         echo "KERNEL_VERSION=$KERNEL_VERSION" >> $GITHUB_ENV
-
-    # 输出调试信息，确保变量已正确设置
-    - name: Debug Kernel Source Directory
-      run: echo "KERNEL_SRC_DIR=$KERNEL_SRC_DIR"
 
     # 克隆内核源代码并切换版本
     - name: Clone kernel source
