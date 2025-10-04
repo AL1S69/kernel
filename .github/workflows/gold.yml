@@ -59,7 +59,7 @@ jobs:
           git checkout 5.10
         elif [ "$KERNEL_VERSION" == "6.6" ]; then
           git checkout 6.6
-        else
+        else:
           echo "Unsupported kernel version"
           exit 1
         fi
@@ -134,7 +134,7 @@ jobs:
 
     # 上传构建好的内核包
     - name: Upload Kernel Package
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: kernel-package
         path: $ANYKERNEL_DIR/*.zip
