@@ -41,7 +41,7 @@ jobs:
       run: |
         # 设置内核源代码路径
         mkdir -p $GITHUB_WORKSPACE/kernel_build/kernel_src
-        git clone https://github.com/liliumproject/kernel_xiaomi_gold.git $GITHUB_WORKSPACE/kernel_build/kernel_src
+        git clone https://github.com/xiaomi-mt6833-dev/kernel_xiaomi_mt6833.git $GITHUB_WORKSPACE/kernel_build/kernel_src
         cd $GITHUB_WORKSPACE/kernel_build/kernel_src
 
         # 选择内核版本并切换
