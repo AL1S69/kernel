@@ -1,134 +1,133 @@
-name: Build Linux Kernel (5.10 and 6.6)
+name: Build Redmi Note 7 (Based AOSP A15)
 
 on:
-  push:
-    branches:
-      - main
-  workflow_dispatch:  # 手动触发工作流
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  # Device env
+  DEVICE_NAME : "redmi_note7"
+  DEVICE_CODENAME : "lavender"
+
+  CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-gnu-"
+  EXTRA_CMDS : "LD=ld.lld LLVM=1 LLVM_IAS=1"
+
+  KERNEL_SOURCE : "https://github.com/ImSpiDy/kernel_xiaomi_lavender.git"
+  KERNEL_BRANCH : "main-dynamic-3.18.0"
+
+  CLANG_SOURCE : "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/LLVM-19.1.7-Linux-X64.tar.xz"
+  CLANG_BRANCH : ""
+
+  GCC_GNU : false
+  GCC_64_SOURCE : "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9.git"
+  GCC_64_BRANCH : "android12L-release"
+  GCC_32_SOURCE : "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.9.git"
+  GCC_32_BRANCH : "android12L-release"
+
+  DEFCONFIG_SOURCE: ""
+  DEFCONFIG_NAME : "lavender_defconfig"
+  DEFCONFIG_ORIGIN_IMAGE: ""
+  DEFCONFIG_FROM_BOOT: false
+
+  KERNELSU_SOURCE : ""
+  KERNELSU_BRANCH : ""
+  KERNELSU_NAME : ""
+
+  KERNELSU_AUTO_GET : "true" # if u want easy setting kernelsu, u can true.
+  KERNELSU_AUTO_FORK : "next" # magic, rsuntk and sukisu
+
+  SUSFS_ENABLE : true
+  SUSFS_FIXED : true
+  SUSFS_UPDATE : true
+
+  AK3_SOURCE : "https://github.com/osm0sis/AnyKernel3.git"
+  AK3_BRANCH : "master"
+
+  BOOT_SOURCE : ""
+
+  NEED_DTBO : false
+  NEED_SAFE_DTBO : false
+
+  ROM_TEXT : "based_aosp_a15"
+
+  # Other env
+  PYTHON_VERSION: "3" # Only 2(Ubuntu 22.04 and Ubuntu 20.04) or 3(Any OS Versions).
+
+  PACK_METHOD: "Anykernel3" # Anykernel3 need SOURCE and BRANCH, MKBOOTIMG needn't it.
+
+  KERNELSU_METHOD: "shell" # shell, manual and only.
+
+  PATCHES_SOURCE: "JackA1ltman/NonGKI_Kernel_Patches" # [your_name]/[your_patch] -> gooder123/NonGKI_Patcher
+  PATCHES_BRANCH: "mi_kernel" # [your_branch] -> main
+
+  SUSFS_FOLDER_FIXED: "redmi_note_7_aosp_a15_419" # Fill in your patch prefix directory here. Leave it blank if there isn't one. -> your_folder
+  SUSFS_155_FIXED: "susfs_155_fixed" # Fill in your patches here. If there are multiple patches, please separate them with a comma. Leave it blank if there isn't one. -> patch1,patch2 (Only v1.5.5 SuSFS)
+  SUSFS_151X_FIXED: "susfs_1511_fixed" # Fill in your patches here. If there are multiple patches, please separate them with a comma. Leave it blank if there isn't one. -> patch1,patch2 (Only v1.5.1X SuSFS)
+  SUSFS_LATEST_FIXED: "" # Fill in your patches here. If there are multiple patches, please separate them with a comma. Leave it blank if there isn't one. -> patch1,patch2
+
+  REKERNEL_ENABLE: "false" # if u need Re:Kernel.
+  
+  BASEBAND_GUARD_ENABLE: "false" #if u want prevent unauthorized writes to critical partitions/device nodes.
+  BASEBAND_GUARD_BOOT: "false" #if u want to protect boot partition.
+
+  HOOK_METHOD: "syscall" # Manual hook method ->  syscall and tracepoint.
+  HOOK_OLDER: "false" # contain backport older patch and syscall older patch.
+
+  KPM_ENABLE: "false" # Only use it for SukiSU-Ultra.
+  KPM_PATCH_SOURCE: "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/refs/heads/main/kpm/patch_linux" # patch exec file source -> raw.githubusercontent.com/Test/Test/patch .
+
+  HIDE_STUFF: "true" # hide some of the features
+
+  GENERATE_DTB: "false" # if u kernel need DTB , but cannot auto generate it. (Only Anykernel3).
+  GENERATE_CHIP: "qcom" # only supported for qcom and mediatek.
+
+  BUILD_DEBUGGER: "false" # Output build errors.
+  SKIP_PATCH: "true" # Ignore errors found in Patch Debugger.
+
+  BUILD_OTHER_CONFIG: "false" # Merge config files.
+  MERGE_CONFIG_FILES: ""
+
+  FREE_MORE_SPACE: "false" # if u want get more space, enabled it.
 
 jobs:
-  build:
-    runs-on: ubuntu-latest  # 使用最新的 Ubuntu 环境
+  build-kernel:
+    name: Redmi Note 7 (Based AOSP A15)
+    runs-on: ubuntu-latest # u can changed to ubuntu 22.04, and need container set ubuntu-latest
+    # container: ubuntu:focal # if u need use arch linux -> archlinux/archlinux:latest or ubuntu 20.04 -> ubuntu:focal
+    env:
+      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
+      CCACHE_NOHASHDIR: "true"
+      CCACHE_HARDLINK: "true"
 
     steps:
-    # 检出代码
-    - name: Checkout repository
-      uses: actions/checkout@v2
+      - name: ⏰ Checkout repository
+        uses: actions/checkout@v4
 
-    # 设置交叉编译工具链
-    - name: Set up cross-compilation tools
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          libncurses-dev \
-          bison \
-          flex \
-          libssl-dev \
-          libelf-dev \
-          bc \
-          git \
-          wget \
-          ccache \
-          zlib1g-dev \
-          liblz4-tool \
-          libusb-1.0-0-dev \
-          gcc-arm-linux-gnueabihf \
-          gcc-aarch64-linux-gnu
+      - name: ⌛️ Compilation environment preparation
+        uses: ./.github/workflows/build-env
 
-    # 克隆内核源代码并切换版本（不使用变量）
-    - name: Clone kernel source
-      run: |
-        # 设置内核源代码路径
-        mkdir -p $GITHUB_WORKSPACE/kernel_build/kernel_src
-        git clone https://github.com/xiaomi-mt6833-dev/kernel_xiaomi_mt6833.git $GITHUB_WORKSPACE/kernel_build/kernel_src
-        cd $GITHUB_WORKSPACE/kernel_build/kernel_src
+      - name: ⚙️ Get neccssary tools
+        uses: ./.github/workflows/build-ready
 
-        # 选择内核版本并切换
-        if [ "${{ github.event.inputs.kernel_version }}" == "5.10" ]; then
-          git checkout 5.10
-        elif [ "${{ github.event.inputs.kernel_version }}" == "6.6" ]; then
-          git checkout 6.6
-        else
-          echo "Unsupported kernel version"
-          exit 1
-        fi
+      - name: 🪝 Patch Kernel of SUSFS
+        uses: ./.github/workflows/patch-susfs
 
-    # 安装依赖
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          build-essential \
-          libncurses-dev \
-          bison \
-          flex \
-          libssl-dev \
-          libelf-dev \
-          bc \
-          git \
-          wget \
-          ccache \
-          zlib1g-dev \
-          liblz4-tool \
-          libusb-1.0-0-dev
+      - name: 🔗 Patch for no-kprobe
+        uses: ./.github/workflows/patch-no-kprobe
 
-    # 配置内核 (ARM64)
-    - name: Configure kernel for ARM64
-      run: |
-        cd $GITHUB_WORKSPACE/kernel_build/kernel_src
-        make ARCH=arm64 CROSS_COMPILE=/usr/bin/aarch64-linux-gnu- O=$GITHUB_WORKSPACE/kernel_build/out sukisuultra_defconfig
-        echo "CONFIG_SLUB=y" >> $GITHUB_WORKSPACE/kernel_build/out/.config
-        echo "CONFIG_SLUB_DEBUG=y" >> $GITHUB_WORKSPACE/kernel_build/out/.config
-        echo "CONFIG_ZRAM=y" >> $GITHUB_WORKSPACE/kernel_build/out/.config
-        echo "CONFIG_ZSWAP=y" >> $GITHUB_WORKSPACE/kernel_build/out/.config
-        echo "CONFIG_ZSWAP_COMPRESSORS_LZ4=y" >> $GITHUB_WORKSPACE/kernel_build/out/.config
-        echo "CONFIG_OVERCOMMIT_MEMORY=1" >> $GITHUB_WORKSPACE/kernel_build/out/.config
-        echo "CONFIG_OVERCOMMIT_RATIO=80" >> $GITHUB_WORKSPACE/kernel_build/out/.config
-        echo "CONFIG_NUMA=y" >> $GITHUB_WORKSPACE/kernel_build/out/.config
-        echo "CONFIG_CGROUPS=y" >> $GITHUB_WORKSPACE/kernel_build/out/.config
-        echo "CONFIG_MEMCG=y" >> $GITHUB_WORKSPACE/kernel_build/out/.config
+      - name: 🪛 Extra Kernel Options
+        run: |
+          # Only ${{ env.DEVICE_NAME }} use it.
+          cd $GITHUB_WORKSPACE/device_kernel
+          # Nothing
 
-    # 编译内核（ARM64）
-    - name: Build kernel for ARM64
-      run: |
-        cd $GITHUB_WORKSPACE/kernel_build/kernel_src
-        make -j$(nproc) ARCH=arm64 CROSS_COMPILE=/usr/bin/aarch64-linux-gnu- O=$GITHUB_WORKSPACE/kernel_build/out
-        if [ ! -f "$GITHUB_WORKSPACE/kernel_build/out/arch/arm64/boot/Image" ]; then
-          echo "Kernel build failed: Image not found!"
-          exit 1
-        fi
+      - name: 🧰 Patch Kernel of Re:Kernel
+        uses: ./.github/workflows/patch-rekernel
 
-    # 克隆 AnyKernel3
-    - name: Clone AnyKernel3
-      run: |
-        git clone https://github.com/osm0sis/AnyKernel3.git $GITHUB_WORKSPACE/kernel_build/AnyKernel3
-        rm -rf $GITHUB_WORKSPACE/kernel_build/AnyKernel3/*
+      - name: 🔒 Patch Kernel of Baseband Guard
+        uses: ./.github/workflows/patch-baseband-guard
 
-    # 将编译好的内核镜像和设备树复制到 AnyKernel3
-    - name: Copy kernel image and device tree to AnyKernel3
-      run: |
-        cp $GITHUB_WORKSPACE/kernel_build/out/arch/arm64/boot/Image $GITHUB_WORKSPACE/kernel_build/AnyKernel3/
-        cp $GITHUB_WORKSPACE/kernel_build/out/arch/arm64/boot/dts/*.dtb $GITHUB_WORKSPACE/kernel_build/AnyKernel3/
+      - name: 🔧 Patch Hide Stuff
+        uses: ./.github/workflows/patch-hide-stuff
 
-    # 复制编译好的模块
-    - name: Copy kernel modules to AnyKernel3
-      run: |
-        cp -r $GITHUB_WORKSPACE/kernel_build/out/lib/modules/* $GITHUB_WORKSPACE/kernel_build/AnyKernel3/modules/
-
-    # 打包内核
-    - name: Package kernel with AnyKernel3
-      run: |
-        cd $GITHUB_WORKSPACE/kernel_build/AnyKernel3
-        ./anykernel.sh
-
-    # 上传构建好的内核包
-    - name: Upload Kernel Package
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-package
-        path: $GITHUB_WORKSPACE/kernel_build/AnyKernel3/*.zip
-
-    # 打印构建完成信息
-    - name: Build complete
-      run: echo "Kernel build completed. The package is available in the artifacts."
+      
