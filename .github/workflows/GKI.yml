@@ -26,36 +26,35 @@ jobs:
 
       - name: Download Toolchain (clang-r547379 + GCC 4.9)
         run: |
-          # 创建工具链目录并分目录存放Clang和GCC
           mkdir -p ${{ github.workspace }}/toolchain/clang
           mkdir -p ${{ github.workspace }}/toolchain/gcc
           
-          # 下载并解压Clang r547379
+          # 下载Clang
           cd ${{ github.workspace }}/toolchain/clang
           wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz -O clang.tar.gz
           tar -xzf clang.tar.gz
           rm clang.tar.gz
           
-          # 下载并解压AOSP GCC 4.9 (arm64)
+          # 下载GCC
           cd ${{ github.workspace }}/toolchain/gcc
           wget https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/+archive/refs/heads/master.tar.gz -O gcc.tar.gz
           tar -xzf gcc.tar.gz
           rm gcc.tar.gz
           
-          # 验证工具链是否存在
-          echo "Clang path: $(ls ${{ github.workspace }}/toolchain/clang/bin/clang)"
-          echo "GCC path: $(ls ${{ github.workspace }}/toolchain/gcc/bin/aarch64-linux-android-gcc)"
+          # 验证工具链
+          ls -lh ${{ github.workspace }}/toolchain/clang/bin/clang
+          ls -lh ${{ github.workspace }}/toolchain/gcc/bin/aarch64-linux-android-gcc
 
       - name: Integrate SukiSU-Ultra
         run: |
-          # 修正源码路径：kernel/kernel
-          cd ${{ github.workspace }}/kernel/kernel
+          # 修正为正确的源码根目录
+          cd ${{ github.workspace }}/kernel
           curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
           echo "SukiSU setup completed."
 
       - name: Fix C99 Syntax Error
         run: |
-          cd ${{ github.workspace }}/kernel/kernel
+          cd ${{ github.workspace }}/kernel
           if [ -f "drivers/kernelsu/throne_tracker.c" ]; then
             echo "Patching throne_tracker.c..."
             sed -i 's/for (char \*line = buf, \*next; line; line = next) {/char *line = buf, *next; for (; line; line = next) {/' drivers/kernelsu/throne_tracker.c
@@ -63,12 +62,12 @@ jobs:
 
       - name: Modify Kernel Name & Conservative Fast Charge
         run: |
-          cd ${{ github.workspace }}/kernel/kernel
+          cd ${{ github.workspace }}/kernel
           
-          # 修改内核版本名: -zako~kernel
+          # 修改内核版本名
           echo 'EXTRAVERSION = -zako~kernel' >> Makefile
           
-          # 保守快充配置（3.6A/3.3A/3.5A安全阈值）
+          # 保守快充配置
           if [ -f "drivers/power/supply/max77759_charger.c" ]; then
             sed -i 's/\.max_current\s*=\s*[0-9]*/.max_current = 3600000/' drivers/power/supply/max77759_charger.c
             sed -i 's/\.input_current_limit\s*=\s*[0-9]*/.input_current_limit = 3600000/' drivers/power/supply/max77759_charger.c
@@ -87,9 +86,9 @@ jobs:
 
       - name: Start GKI Compilation
         run: |
-          cd ${{ github.workspace }}/kernel/kernel
+          cd ${{ github.workspace }}/kernel
           
-          # 配置工具链路径（同时加入Clang和GCC的bin目录）
+          # 配置工具链路径
           export PATH="${{ github.workspace }}/toolchain/clang/bin:${{ github.workspace }}/toolchain/gcc/bin:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
@@ -106,16 +105,16 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_COMPAT=arm-linux-androideabi-
           
-          # 清理旧产物
+          # 清理
           make clean && make mrproper
           
           # 加载GKI配置
           make gki_defconfig
           
-          # 编译内核（指定内核名）
+          # 编译内核
           make -j$(nproc) LOCALVERSION=-zako~kernel Image.gz
           
-          # 检查产物是否生成
+          # 检查产物
           if [ -f "arch/arm64/boot/Image.gz" ]; then
             echo "GKI Kernel Build Success!"
             strings arch/arm64/boot/Image.gz | grep "Linux version" | head -n 1
@@ -130,4 +129,9 @@ jobs:
           
           # 修改AnyKernel3标识
           sed -i 's/name1=/name1=Zako Kernel/' anykernel/anykernel.sh
+          sed -i 's/version1=/version1=GKI-ConservativeFastCharge/' anykernel/anykernel.sh
           
+          # 复制内核产物
+          cp ${{ github.workspace }}/kernel/arch/arm64/boot/Image.gz anykernel/
+          
+        
