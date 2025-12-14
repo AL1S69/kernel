@@ -1,4 +1,4 @@
-name: Build Zako Kernel (GKI + FastCharge)
+name: Build Zako Kernel (GKI + Conservative FastCharge)
 
 on:
   workflow_dispatch:
@@ -6,7 +6,9 @@ on:
 jobs:
   build:
     runs-on: ubuntu-22.04
-    
+    permissions:
+      contents: write  # 赋予上传产物的权限
+
     steps:
       - name: Checkout Kernel Source
         uses: actions/checkout@v4
@@ -51,54 +53,35 @@ jobs:
             sed -i 's/for (char \*line = buf, \*next; line; line = next) {/char *line = buf, *next; for (; line; line = next) {/' drivers/kernelsu/throne_tracker.c
           fi
 
-      - name: Modify Kernel Name & Fast Charge (关键步骤)
+      - name: Modify Kernel Name & Conservative Fast Charge
         run: |
           cd ${{ github.workspace }}/kernel
           
-          ##############################################################################
           # 1. 修改内核版本名: -zako~kernel
-          ##############################################################################
-          # 方法 A: 修改 Makefile (推荐，最直接)
           echo 'EXTRAVERSION = -zako~kernel' >> Makefile
-          # 方法 B: 或者在编译命令中通过 LOCALVERSION 指定 (下面的编译步骤也加了)
           
-          ##############################################################################
-          # 2. 加入快充支持 (针对小米 Diting 平板硬件)
-          # 注意：Diting (Xiaomi Pad 6/6Pro等) 通常使用 MAX77759 充电芯片 + AXP813 电源管理
-          # 我们需要修改驱动中的电流限制值。
-          ##############################################################################
-          
-          # --- 策略 A: 修改 MAX77759 充电芯片驱动 (通用安卓平板方案) ---
-          # 文件路径可能为 drivers/power/supply/max77759_charger.c
-          # 将最大电流限制 (max_current) 从默认值 (如 3000000uA) 修改为更高 (如 5000000uA)
-          # 同时修改输入电流限制 (input_current_limit)
+          # 2. 保守快充配置（基于小米Diting硬件安全阈值，默认3A→3.6A）
+          # MAX77759 充电芯片：3600000uA = 3.6A（原装充电器常见安全上限）
           if [ -f "drivers/power/supply/max77759_charger.c" ]; then
-            echo "Patching MAX77759 Charger for Fast Charge..."
-            # 修改 max_current (搜索类似 .max_current = 3000000 的行)
-            sed -i 's/\.max_current\s*=\s*[0-9]*/.max_current = 5000000/' drivers/power/supply/max77759_charger.c
-            # 修改 input_current_limit
-            sed -i 's/\.input_current_limit\s*=\s*[0-9]*/.input_current_limit = 5000000/' drivers/power/supply/max77759_charger.c
-            # 修改恒压充电电流 (iccv)
-            sed -i 's/\.iccv\s*=\s*[0-9]*/.iccv = 5000000/' drivers/power/supply/max77759_charger.c
+            echo "Patching MAX77759 for Conservative Fast Charge..."
+            sed -i 's/\.max_current\s*=\s*[0-9]*/.max_current = 3600000/' drivers/power/supply/max77759_charger.c
+            sed -i 's/\.input_current_limit\s*=\s*[0-9]*/.input_current_limit = 3600000/' drivers/power/supply/max77759_charger.c
+            sed -i 's/\.iccv\s*=\s*[0-9]*/.iccv = 3200000/' drivers/power/supply/max77759_charger.c # 恒压阶段降为3.2A
           fi
 
-          # --- 策略 B: 修改 AXP813 电源管理驱动 (如果存在) ---
-          # 文件路径可能为 drivers/power/axp/axp813.c
+          # AXP813 电源管理：3300000uA = 3.3A
           if [ -f "drivers/power/axp/axp813.c" ]; then
-            echo "Patching AXP813 for Fast Charge..."
-            # 这里假设修改充电电流配置表，将 3000mA 改为 4500mA 或更高
-            # 注意：具体数值需根据硬件安全范围调整，这里使用较大值示例
-            sed -i 's/3000000/4500000/g' drivers/power/axp/axp813.c
+            echo "Patching AXP813 for Conservative Fast Charge..."
+            sed -i 's/3000000/3300000/g' drivers/power/axp/axp813.c
           fi
 
-          # --- 策略 C: 修改 Richtek RT9467 (部分 Diting 变体可能用这个) ---
+          # RT9467 充电芯片：3500000uA = 3.5A
           if [ -f "drivers/power/supply/rt9467_charger.c" ]; then
-            echo "Patching RT9467 Charger..."
-            sed -i 's/\.max_current\s*=\s*[0-9]*/.max_current = 4500000/' drivers/power/supply/rt9467_charger.c
+            echo "Patching RT9467 for Conservative Fast Charge..."
+            sed -i 's/\.max_current\s*=\s*[0-9]*/.max_current = 3500000/' drivers/power/supply/rt9467_charger.c
           fi
           
-          echo "Kernel name and fast charge patches applied."
-          ##############################################################################
+          echo "Kernel name and conservative fast charge patches applied."
 
       - name: Start GKI Compilation
         run: |
@@ -116,4 +99,35 @@ jobs:
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
           export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_COMPAT=arm-linux-andr
+          export CROSS_COMPILE_COMPAT=arm-linux-androideabi-
+          
+          # 清理
+          make clean && make mrproper
+          
+          # 加载 GKI 配置
+          make gki_defconfig
+          
+          # 编译内核
+          make -j$(nproc) LOCALVERSION=-zako~kernel Image.gz
+          
+          # 检查产物
+          if [ -f "arch/arm64/boot/Image.gz" ]; then
+            echo "GKI Kernel Build Success!"
+            strings arch/arm64/boot/Image.gz | grep "Linux version" | head -n 1
+          else
+            echo "Build Failed!"
+            exit 1
+          fi
+
+      - name: Pack into Flashable ZIP
+        run: |
+          git clone https://github.com/osm0sis/AnyKernel3 -b main anykernel
+          
+          # 修改 AnyKernel3 标识
+          sed -i 's/name1=/name1=Zako Kernel/' anykernel/anykernel.sh
+          sed -i 's/version1=/version1=GKI-ConservativeFastCharge/' anykernel/anykernel.sh
+          
+          cp ${{ github.workspace }}/kernel/arch/arm64/boot/Image.gz anykernel/
+          
+          # 命名并打包
+          VERSION=$(date +%Y%m%d-%H%
