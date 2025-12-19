@@ -1,63 +1,74 @@
 name: Build Xiaomi gold 5.10 GKI Kernel (Zako)
 
-on: workflow_dispatch
+on:
+  workflow_dispatch:
 
 jobs:
   build_kernel:
     runs-on: ubuntu-22.04
     steps:
-      - name: 1. 装依赖
+      - name: 1. 安装基础依赖
         run: |
           sudo apt update && sudo apt install -y git make bison flex gcc-aarch64-linux-gnu bc libssl-dev libelf-dev python3 curl
           sudo apt clean
 
-      - name: 2. 拉源码
+      - name: 2. 拉取内核源码
         run: |
           git clone --depth 1 -b master https://github.com/Winkmoon/xinran_kernel_xiaomi_diting.git kernel
           cd kernel && echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
 
-      - name: 3. 下Clang-r547379
+      - name: 3. 下载并解压Clang工具链
         run: |
-          cd $KERNEL_DIR
+          cd ${{ env.KERNEL_DIR }}
           wget https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz
           mkdir clang-r547379 && tar zxf clang-r547379.tar.gz -C clang-r547379
-          echo "CLANG_DIR=$KERNEL_DIR/clang-r547379" >> $GITHUB_ENV
+          echo "CLANG_DIR=${{ env.KERNEL_DIR }}/clang-r547379" >> $GITHUB_ENV
 
       - name: 4. 集成SukiSU-Ultra
-        run: cd $KERNEL_DIR && curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s main
-
-      - name: 5. 配置GKI+SUKISU KPM
         run: |
-          cd $KERNEL_DIR
-          # 核心：用gki_defconfig
-          make O=out ARCH=arm64 gki_defconfig
-          # 追加SUKISU必需配置
-          cat >> out/.config << EOF
-# SUKISU KPM
-CONFIG_KALLSYMS=y
-CONFIG_KALLSYMS_ALL=y
-CONFIG_KPROBES=y
-CONFIG_HAVE_KPROBES=y
-CONFIG_KPROBE_EVENTS=y
-CONFIG_KSU=y
-CONFIG_KPM=y
-EOF
-          make O=out ARCH=arm64 olddefconfig
+          cd ${{ env.KERNEL_DIR }}
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s main
 
-      - name: 6. 改内核名 -zako~kerne
-        run: sed -i "s/LOCALVERSION=.*/LOCALVERSION=-zako~kerne/" $KERNEL_DIR/Makefile
+      - name: 5. 配置GKI+SUKISU KPM（scripts/config方式）
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          # 加载基础GKI配置
+          make O=out ARCH=arm64 gki_defconfig
+          # 进入out目录，用内核原生工具启用SUKISU配置
+          cd out
+          ../scripts/config --enable KALLSYMS
+          ../scripts/config --enable KALLSYMS_ALL
+          ../scripts/config --enable KPROBES
+          ../scripts/config --enable HAVE_KPROBES
+          ../scripts/config --enable KPROBE_EVENTS
+          ../scripts/config --enable KSU
+          ../scripts/config --enable KPM
+          # 让配置生效
+          make ARCH=arm64 olddefconfig O=out
+          cd ..
+
+      - name: 6. 修改内核名
+        run: |
+          sed -i "s/LOCALVERSION=.*/LOCALVERSION=-zako~kerne/" ${{ env.KERNEL_DIR }}/Makefile
 
       - name: 7. 编译ARM64 GKI内核
         run: |
-          cd $KERNEL_DIR
-          export ARCH=arm64 SUBARCH=arm64
+          cd ${{ env.KERNEL_DIR }}
+          export ARCH=arm64
+          export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export CC=$CLANG_DIR/bin/clang CLANG_TRIPLE=aarch64-linux-gnu-
-          export LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump
+          export CC=${{ env.CLANG_DIR }}/bin/clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          # 编译内核产物
           make -j$(nproc) O=out ARCH=arm64 Image.gz-dtb dtbo.img
           # 归集boot产物
-          mkdir -p $KERNEL_DIR/boot
-          cp out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/dtbo.img $KERNEL_DIR/boot/
+          mkdir -p ${{ env.KERNEL_DIR }}/boot
+          cp out/arch/arm64/boot/Image.gz-dtb out/arch/arm64/boot/dtbo.img ${{ env.KERNEL_DIR }}/boot/
 
       - name: 8. 上传boot产物
         uses: actions/upload-artifact@v4
@@ -65,4 +76,3 @@ EOF
           name: zako~kerne-diting-gki-boot
           path: ${{ env.KERNEL_DIR }}/boot/
           retention-days: 7
-
