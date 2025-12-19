@@ -29,24 +29,26 @@ jobs:
           cd ${{ env.KERNEL_DIR }}
           curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s main
 
-      - name: 5. 配置GKI+SUKISU KPM（固化配置无交互）
+      - name: 5. 配置GKI+SUKISU KPM（修正目录逻辑）
         run: |
           cd ${{ env.KERNEL_DIR }}
+          # 屏蔽交互配置的环境变量
           export KCONFIG_NOSILENTCONFIG=1
           export KCONFIG_NOTIMESTAMP=1
           export CONFIG_SHELL=/bin/bash
+          # 直接在源码根目录执行配置，O=out指定输出目录，不进入out子目录
           make O=out ARCH=arm64 gki_defconfig
-          cd out
-          ../scripts/config --enable KALLSYMS
-          ../scripts/config --enable KALLSYMS_ALL
-          ../scripts/config --enable KPROBES
-          ../scripts/config --enable HAVE_KPROBES
-          ../scripts/config --enable KPROBE_EVENTS
-          ../scripts/config --enable KSU
-          ../scripts/config --enable KPM
-          yes "" | make ARCH=arm64 silentoldconfig O=out
-          yes "" | make ARCH=arm64 olddefconfig O=out
-          cd ..
+          # 直接通过源码根目录的scripts/config修改out目录的配置，无需cd out
+          ./scripts/config --file out/.config --enable KALLSYMS
+          ./scripts/config --file out/.config --enable KALLSYMS_ALL
+          ./scripts/config --file out/.config --enable KPROBES
+          ./scripts/config --file out/.config --enable HAVE_KPROBES
+          ./scripts/config --file out/.config --enable KPROBE_EVENTS
+          ./scripts/config --file out/.config --enable KSU
+          ./scripts/config --file out/.config --enable KPM
+          # 直接在源码根目录执行固化配置，指定O=out，避免目录错误
+          yes "" | make O=out ARCH=arm64 silentoldconfig
+          yes "" | make O=out ARCH=arm64 olddefconfig
 
       - name: 6. 修改内核名
         run: |
@@ -67,19 +69,17 @@ jobs:
           export OBJDUMP=llvm-objdump
           export KCONFIG_NOTIMESTAMP=1
           export CONFIG_SHELL=/bin/bash
-          # 仅编译有规则的核心产物，避免dtbo.img的No rule错误
+          # 源码根目录编译，指定O=out
           yes "" | make -j$(nproc) O=out ARCH=arm64 Image.gz-dtb
-          # 创建boot目录并拷贝所有编译生成的boot相关产物
+          # 创建boot目录并全量拷贝产物
           mkdir -p ${{ env.KERNEL_DIR }}/boot
-          # 拷贝out/arch/arm64/boot下的所有文件到boot目录
           cp -r ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/* ${{ env.KERNEL_DIR }}/boot/
-          # 列出boot目录产物，便于日志查看
           ls -l ${{ env.KERNEL_DIR }}/boot/
 
       - name: 8. 打包并上传boot目录所有产物
         uses: actions/upload-artifact@v4
         with:
           name: zako~kerne-diting-gki-boot-all
-          path: |
-            ${{ env.KERNEL_DIR }}/boot/**/*  # 匹配boot目录下所有文件和子目录
+          path: ${{ env.KERNEL_DIR }}/boot/**/*
           retention-days: 7
+
