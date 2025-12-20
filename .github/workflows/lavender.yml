@@ -1,134 +1,108 @@
-
-name: Lavender SDM660 Kernel Build (zako~kernel + LLVM 19.1.0 + No Warnings)
+name: Lavender SDM660 Build (zako~kernel + LLVM 19.1.0 + Space Fix)
 
 on:
-  push:
-    branches: [ main ]
-  pull_request:
-    branches: [ main ]
-  workflow_dispatch:
+  workflow_dispatch: # 仅手动触发，避免重复消耗空间
 
 jobs:
   build_kernel:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout SDM660 Kernel Source
+      # 1. 深度清理空间（释放12G+核心空间）
+      - name: Deep Clean Runner Space
+        run: |
+          # 删除系统大文件
+          sudo apt remove -y --purge firefox snapd google-chrome-stable libreoffice*
+          sudo apt autoremove -y && sudo apt clean
+          # 删除无用开发环境
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /var/lib/docker /var/cache/apt/archives/*
+          # 删除GitHub Actions缓存垃圾
+          sudo rm -rf /home/runner/actions-runner/_work/_temp/* /home/runner/actions-runner/_work/_cache/*
+          # 查看剩余空间（关键：确保剩余≥8G）
+          df -h / && du -sh /home/runner/
+
+      # 2. 克隆内核源码（极致轻量化）
+      - name: Checkout Kernel Source (Light)
         uses: actions/checkout@v4
         with:
           repository: jsdizkcksv/android_kernel_xiaomi_sdm660
-          submodules: recursive
-          fetch-depth: 0
+          path: kernel
+          submodules: false
+          fetch-depth: 1 # 仅克隆最新1次提交
+          sparse-checkout: | # 仅检出编译必需目录
+            arch/arm64
+            include
+            scripts
+            Makefile
+            .config
 
-      - name: Cache Kernel Build Artifacts
-        uses: actions/cache@v3
-        with:
-          path: |
-            ${{ github.workspace }}/out
-            ${{ github.workspace }}/.config
-            ${{ github.workspace }}/include/generated
-          key: kernel-build-${{ github.sha }}
-          restore-keys: |
-            kernel-build-
-
-      - name: Cache LLVM 19.1.0 Toolchain
-        id: cache_llvm
-        uses: actions/cache@v3
-        with:
-          path: llvm-19.1.0
-          key: llvm-19.1.0-linux-x64-2025
-
-      - name: Download & Extract LLVM 19.1.0
-        if: steps.cache_llvm.outputs.cache-hit != 'true'
+      # 3. 下载LLVM 19.1.0（使用压缩流直解，避免临时文件）
+      - name: Download & Extract LLVM 19.1.0 (Stream)
         run: |
-          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz -O llvm-19.1.0.tar.xz
-          tar -xf llvm-19.1.0.tar.xz
-          mv LLVM-19.1.0-Linux-X64 llvm-19.1.0
-          chmod -R +x llvm-19.1.0/bin/*
+          # 直接流式解压，不生成临时压缩包
+          wget -q -O - https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz | tar -xJ -C /tmp/ --strip-components=1
+          # 移动到工作目录并赋予权限
+          mv /tmp/bin /tmp/lib /tmp/include ${{ github.workspace }}/llvm-19.1.0/
+          chmod -R +x ${{ github.workspace }}/llvm-19.1.0/bin/
+          # 删除解压临时文件
+          rm -rf /tmp/*
+          # 查看LLVM体积（约1.8G，仅保留编译必需文件）
+          du -sh ${{ github.workspace }}/llvm-19.1.0/
 
-      - name: Add Swap Space
-        run: |
-          sudo fallocate -l 8G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-
-      - name: Install Full Dependencies
+      # 4. 安装最小依赖（仅保留编译必需）
+      - name: Install Minimal Dependencies
         run: |
           sudo apt update -y && sudo apt install -y --no-install-recommends \
-            bc bison flex libssl-dev libelf-dev dwarves git zip unzip wget make \
-            gcc-aarch64-linux-gnu lld-19 binutils-aarch64-linux-gnu
+            bc bison flex libssl-dev libelf-dev dwarves make gcc-aarch64-linux-gnu
           sudo apt clean
-          sudo ln -s /usr/bin/lld-19 /usr/bin/ld.lld
 
-      - name: Define Absolute Paths
-        run: |
-          echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
-          echo "LLVM_DIR=$(pwd)/llvm-19.1.0" >> $GITHUB_ENV
-
-      - name: Configure Kernel (zako~kernel + Disable Warnings)
-        working-directory: ${{ env.KERNEL_DIR }}
+      # 5. 配置内核（关闭非必需功能，减少编译量）
+      - name: Configure Kernel (zako~kernel + Slim)
+        working-directory: kernel
         run: |
           export ARCH=arm64
           make lavender_defconfig
           # 设置自定义内核名
           scripts/config --set-str LOCALVERSION "-zako~kernel"
-          # 关闭功能相关配置
-          scripts/config --disable COMPAT
-          scripts/config --disable COMPAT_VDSO
-          scripts/config --disable LDFLAGS_FIX_CORTEX_A53_843419
-          scripts/config --disable CONFIG_DTBO_BUILD
-          scripts/config --disable CC_STACKPROTECTOR_STRONG
-          scripts/config --enable CC_STACKPROTECTOR_BASIC
+          # 关闭高空间占用功能
+          scripts/config --disable COMPAT --disable COMPAT_VDSO --disable CONFIG_DTBO_BUILD
+          scripts/config --disable DEBUG_INFO --disable KERNEL_DEBUG --disable TRACEPOINTS
+          # 开启BPF核心功能
           scripts/config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT
-          # 核心：关闭内核编译警告（仅保留错误）
-          scripts/config --disable WARN_UNUSED_RESULT
-          scripts/config --disable WARN_DEPRECATED
-          scripts/config --set-str CC_FLAGS_ERROR_ON_WARNING "-Werror" # 可选：将警告转为错误快速定位
           make ARCH=arm64 olddefconfig
-          grep -E "LOCALVERSION|WARN_" .config
 
-      - name: Compile Kernel (LLVM 19.1.0 + Filter Warnings)
-        working-directory: ${{ env.KERNEL_DIR }}
+      # 6. 编译内核（低IO+轻量化编译）
+      - name: Compile Kernel (LLVM 19.1.0 + Slim Build)
+        working-directory: kernel
         run: |
-          export CC=${{ env.LLVM_DIR }}/bin/clang
-          export CXX=${{ env.LLVM_DIR }}/bin/clang++
+          # 配置LLVM 19.1.0路径
+          export LLVM_DIR=${{ github.workspace }}/llvm-19.1.0
+          export CC=$LLVM_DIR/bin/clang
+          export CXX=$LLVM_DIR/bin/clang++
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export CROSS_COMPILE=aarch64-linux-gnu-
           export ARCH=arm64
-          export PATH=${{ env.LLVM_DIR }}/bin:$PATH
-          # LLVM编译选项：屏蔽冗余警告
-          export KCFLAGS="-w -Wno-deprecated-declarations -Wno-unused-parameter -Wno-pointer-sign"
-          export KBUILD_CFLAGS="-w"
-          export KBUILD_CXXFLAGS="-w"
-          # 编译并过滤警告（仅显示错误）
-          make -j4 ARCH=arm64 Image.gz-dtb NO_DTBO=1 DTBO_IMG= \
-            CC=$CC CXX=$CXX CLANG_TRIPLE=$CLANG_TRIPLE CROSS_COMPILE=$CROSS_COMPILE \
-            KCFLAGS="$KCFLAGS" KBUILD_CFLAGS="$KBUILD_CFLAGS" KBUILD_CXXFLAGS="$KBUILD_CXXFLAGS" \
-            2>&1 | grep -E "error:|Error:|ERROR:" # 仅输出错误信息
-          # 验证产物
-          if [ -f arch/arm64/boot/Image.gz-dtb ]; then
-            ls -l arch/arm64/boot/Image.gz-dtb
-          else
-            echo "编译失败，查看完整日志"
-            exit 1
-          fi
+          export PATH=$LLVM_DIR/bin:$PATH
+          # 轻量化编译参数（无调试信息+高优化）
+          export KBUILD_CFLAGS="-O2 -g0 -ffunction-sections -fdata-sections"
+          export KBUILD_LDFLAGS="--gc-sections" # 移除未使用代码段
+          # 2核编译（平衡速度与IO）
+          make -j2 ARCH=arm64 Image.gz-dtb NO_DTBO=1
+          # 验证产物并查看体积
+          ls -lh arch/arm64/boot/Image.gz-dtb
+          du -sh arch/arm64/boot/
 
-      - name: Clone AnyKernel3 for Lavender
+      # 7. 高压缩打包并上传
+      - name: Pack & Upload Kernel
         run: |
-          git clone https://github.com/osm0sis/AnyKernel3.git anykernel
-          cd anykernel
-          sed -i "s/device.name1=/device.name1=lavender/" anykernel.sh
-          sed -i "s/device.name2=/device.name2=Redmi Note 7/" anykernel.sh
-          sed -i "s/kernel.string=/kernel.string=zako~kernel (LLVM 19.1.0)/" anykernel.sh
+          mkdir -p output
+          cp kernel/arch/arm64/boot/Image.gz-dtb output/
+          cd output
+          zip -9 -m lavender-zako-kernel-llvm19.zip Image.gz-dtb # 高压缩+删除源文件释放空间
+          ls -lh *.zip
+          # 上传产物（仅保留3天）
+          uses: actions/upload-artifact@v4
+          with:
+            name: lavender-zako-kernel-llvm19
+            path: output/lavender-zako-kernel-llvm19.zip
+            retention-days: 3
 
-      - name: Pack Flashable Zip
-        run: |
-          cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/Image.gz-dtb anykernel/
-          cd anykernel
-          zip -r9 "Lavender-zako~kernel-LLVM19-$(date +%Y%m%d).zip" * -x .git* README.md *.sh
-
-      - name: Upload Compiled Kernel
-        uses: actions/upload-artifact@v4
-        with:
-          name: Lavender-zako~kernel-LLVM19-Build
-          path: anyk
