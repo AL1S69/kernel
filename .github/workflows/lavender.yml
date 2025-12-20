@@ -1,4 +1,4 @@
-name: Lavender SDM660 Kernel Build (zako~kernel + Speed Up)
+name: Lavender SDM660 Kernel Build (zako~kernel + Fix All Errors)
 
 on:
   push:
@@ -33,7 +33,7 @@ jobs:
         id: cache_toolchain
         uses: actions/cache@v3
         with:
-          path: android-kernel-tools
+          path: ${{ github.workspace }}/android-kernel-tools
           key: akitlove-clang-r428724-2025
 
       - name: Clone Akitlove Kernel Tools
@@ -51,51 +51,51 @@ jobs:
       - name: Dynamic Locate Kernel Root
         run: |
           echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
-          echo "Kernel root directory: $(pwd)"
+          echo "TOOLCHAIN_DIR=$(pwd)/android-kernel-tools" >> $GITHUB_ENV
+          echo "Kernel root: $(pwd), Toolchain root: $(pwd)/android-kernel-tools"
 
-      - name: Configure Kernel (zako~kernel + BPF + Compatibility Fix)
+      - name: Configure Kernel (zako~kernel + Fix All Issues)
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           export ARCH=arm64
           # 加载默认配置
           make lavender_defconfig
-          # 显示基础内核版本
+          # 显示基础版本+设置自定义内核名
           echo "===== 基础内核版本 ====="
           make kernelversion
-          # 设置自定义内核名：-zako~kernel
-          export CUSTOM_KERNEL_NAME="-zako~kernel"
-          scripts/config --set-str LOCALVERSION "$CUSTOM_KERNEL_NAME"
-          # 修复编译器/链接器特性
+          scripts/config --set-str LOCALVERSION "-zako~kernel"
+          # 核心修复1：关闭ARM32兼容，消除CROSS_COMPILE_ARM32依赖
+          scripts/config --disable COMPAT
+          scripts/config --disable COMPAT_VDSO
+          # 核心修复2：关闭链接器不支持的Cortex-A53 erratum修复
+          scripts/config --disable LDFLAGS_FIX_CORTEX_A53_843419
+          # 修复编译器特性+关闭DTBO
           scripts/config --disable CC_STACKPROTECTOR_STRONG
           scripts/config --enable CC_STACKPROTECTOR_BASIC
-          scripts/config --disable LDFLAGS_FIX_CORTEX_A53_843419
           scripts/config --disable CONFIG_DTBO_BUILD
           # 补全BPF配置
           scripts/config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT
           make ARCH=arm64 olddefconfig
-          # 显示最终内核名配置
-          echo "===== 最终内核名配置 ====="
-          grep "CONFIG_LOCALVERSION" .config
-          # 显示完整内核版本（基础版本+自定义内核名）
-          echo "===== 完整内核版本 ====="
-          echo "$(make kernelversion)$CUSTOM_KERNEL_NAME"
+          # 验证配置
+          echo "===== 最终配置验证 ====="
+          grep -E "LOCALVERSION|COMPAT|LDFLAGS_FIX_CORTEX_A53_843419" .config
 
-      - name: Compile Kernel (Speed Up + Akitlove Clang)
+      - name: Compile Kernel (Fix Clang Path + Speed Up)
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
-          CLANG_PATH=$(pwd)/../android-kernel-tools/clang/host/linux-x86/clang-r428724
+          # 核心修复3：使用绝对路径指定Clang，避免相对路径错误
+          export CLANG_PATH=${{ env.TOOLCHAIN_DIR }}/clang/host/linux-x86/clang-r428724
           export CC=$CLANG_PATH/bin/clang
           export CXX=$CLANG_PATH/bin/clang++
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export ARCH=arm64
           export PATH=$CLANG_PATH/bin:$PATH
-          # 启用ccache编译缓存加速
+          # 启用编译缓存加速
           export CCACHE_DIR=${{ github.workspace }}/.ccache
           export CCACHE_COMPRESS=1
-          # 最大化并行编译
+          # 编译内核（仅ARM64，跳过DTBO）
           make -j$((`nproc` + 2)) ARCH=arm64 Image.gz-dtb NO_DTBO=1 DTBO_IMG= \
-            CC=$CC CXX=$CXX CLANG_TRIPLE=$CLANG_TRIPLE \
-            CCACHE=1
+            CC=$CC CXX=$CXX CLANG_TRIPLE=$CLANG_TRIPLE CCACHE=1
           # 验证产物
           ls -l arch/arm64/boot/Image.gz-dtb
           file arch/arm64/boot/Image.gz-dtb
@@ -104,8 +104,6 @@ jobs:
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
-          # 适配设备并嵌入自定义内核名
-          CUSTOM_KERNEL_NAME="-zako~kernel"
           sed -i "s/device.name1=/device.name1=lavender/" anykernel.sh
           sed -i "s/device.name2=/device.name2=Redmi Note 7/" anykernel.sh
           sed -i "s/kernel.string=/kernel.string=zako~kernel for Lavender/" anykernel.sh
@@ -114,9 +112,7 @@ jobs:
         run: |
           cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
-          # 压缩包名包含自定义内核名
           zip -r9 "Lavender-zako~kernel-$(date +%Y%m%d-%H%M).zip" * -x .git* README.md *.sh
-          # 显示打包结果
           ls -l *.zip
 
       - name: Upload Compiled Kernel
