@@ -1,4 +1,4 @@
-name: Build & Pack Lavender Kernel (Fix Workdir)
+name: Lavender SDM660 Kernel Build (Akitlove Clang)
 
 on:
   push:
@@ -8,87 +8,99 @@ on:
   workflow_dispatch:
 
 jobs:
-  build_and_pack:
+  build_kernel:
     runs-on: ubuntu-22.04
     steps:
-      - name: Checkout Kernel Source
+      - name: Checkout SDM660 Kernel Source
         uses: actions/checkout@v4
         with:
-          path: kernel
+          repository: jsdizkcksv/android_kernel_xiaomi_sdm660
           submodules: recursive
           fetch-depth: 0
 
       - name: Cache Akitlove Toolchain
-        id: cache-toolchain
+        id: cache_toolchain
         uses: actions/cache@v3
         with:
-          path: kernel/android-kernel-tools
+          path: android-kernel-tools
           key: akitlove-clang-r428724-2025
 
       - name: Clone Akitlove Kernel Tools
-        if: steps.cache-toolchain.outputs.cache-hit != 'true'
+        if: steps.cache_toolchain.outputs.cache-hit != 'true'
         run: |
-          cd kernel
           git clone https://github.com/Akitlove/android-kernel-tools.git android-kernel-tools
           chmod -R +x android-kernel-tools/clang/host/linux-x86/clang-r428724/bin/*
 
-      - name: Check Source Directory Structure
+      - name: Install Basic Dependencies
         run: |
-          # 打印当前工作目录和源码目录结构，便于排查
-          pwd
-          ls -R /home/runner/work/kernel/
-          # 确认lavender-44的真实路径
-          find /home/runner/work/kernel/ -name "lavender-44"
+          sudo apt update
+          sudo apt install -y \
+            bc bison flex libssl-dev libelf-dev dwarves \
+            git zip unzip wget make
 
-      - name: Configure Kernel (Fix Path + BPF + Compatibility)
-        working-directory: /home/runner/work/kernel/kernel/lavender-44 # 使用绝对路径，避免嵌套错误
+      - name: Dynamic Locate Kernel Root
+        run: |
+          # 针对sdm660仓库，直接指定根目录（仓库根即为编译目录）
+          echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
+          echo "Kernel root directory: $(pwd)"
+
+      - name: Configure Kernel (BPF + Compatibility Fix)
+        working-directory: ${{ env.KERNEL_DIR }}
         run: |
           make lavender_defconfig
+          # 修复编译器特性不支持
           scripts/config --disable CC_STACKPROTECTOR_STRONG
           scripts/config --enable CC_STACKPROTECTOR_BASIC
+          # 关闭Cortex-A53 erratum修复（链接器不支持）
           scripts/config --disable LDFLAGS_FIX_CORTEX_A53_843419
+          # 彻底关闭DTBO构建
           scripts/config --disable CONFIG_DTBO_BUILD
+          # 补全Android 16 BPF配置
           scripts/config --enable BPF
           scripts/config --enable BPF_SYSCALL
           scripts/config --enable BPF_JIT
+          scripts/config --enable BPF_UNPRIV_DEFAULT_OFF
+          # 应用配置
           make olddefconfig
 
-      - name: Compile Kernel (Akitlove Clang Only + Skip DTBO)
-        working-directory: /home/runner/work/kernel/kernel/lavender-44 # 绝对路径保持一致
+      - name: Compile Kernel (Akitlove Clang + Skip DTBO)
+        working-directory: ${{ env.KERNEL_DIR }}
         run: |
-          export CLANG_PATH=$(pwd)/../android-kernel-tools/clang/host/linux-x86/clang-r428724
+          # 配置Akitlove Clang路径
+          CLANG_PATH=$(pwd)/../android-kernel-tools/clang/host/linux-x86/clang-r428724
           export CC=$CLANG_PATH/bin/clang
           export CXX=$CLANG_PATH/bin/clang++
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export ARCH=arm64
           export PATH=$CLANG_PATH/bin:$PATH
 
-          make -j$(nproc) Image.gz-dtb \
-            NO_DTBO=1 \
-            DTBO_IMG= \
-            CC=$CC \
-            CXX=$CXX \
-            CLANG_TRIPLE=$CLANG_TRIPLE \
-            ARCH=$ARCH
+          # 编译内核镜像（跳过DTBO）
+          make -j$(nproc) Image.gz-dtb NO_DTBO=1 DTBO_IMG= \
+            CC=$CC CXX=$CXX CLANG_TRIPLE=$CLANG_TRIPLE ARCH=$ARCH
           
+          # 验证编译产物
           ls -l arch/arm64/boot/Image.gz-dtb
 
-      - name: Clone AnyKernel3
+      - name: Clone AnyKernel3 for Lavender
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
+          # 适配红米Note7 (lavender)设备
           sed -i 's/device.name1=/device.name1=lavender/' anykernel.sh
           sed -i 's/device.name2=/device.name2=Redmi Note 7/' anykernel.sh
+          sed -i 's/device.name3=/device.name3=Redmi Note 7 Pro/' anykernel.sh
+          sed -i 's/device.name4=/device.name4=Redmi Note 7S/' anykernel.sh
+          sed -i 's/kernel.string=/kernel.string=SDM660 Kernel (Akitlove Clang)/' anykernel.sh
 
       - name: Pack Flashable Zip
         run: |
-          cp /home/runner/work/kernel/kernel/lavender-44/arch/arm64/boot/Image.gz-dtb anykernel/
+          cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
-          zip -r9 Lavender-Kernel-Akitlove-Clang-$(date +%Y%m%d).zip * -x .git* README.md *.sh
+          zip -r9 Lavender-SDM660-Kernel-$(date +%Y%m%d-%H%M).zip * -x .git* README.md *.sh
 
-      - name: Upload Artifact
+      - name: Upload Compiled Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Lavender-Kernel-Build
-          path: anykernel/Lavender-Kernel-Akitlove-Clang-*.zip
+          name: Lavender-SDM660-Kernel-Build
+          path: anykernel/Lavender-SDM660-Kernel-*.zip
           retention-days: 7
