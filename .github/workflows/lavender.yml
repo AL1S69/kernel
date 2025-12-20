@@ -1,4 +1,4 @@
-name: Build & Pack Lavender Kernel (Akitlove Official Toolchain)
+name: Build & Pack Lavender Kernel (Akitlove Clang r428724)
 
 on:
   push:
@@ -23,19 +23,18 @@ jobs:
         uses: actions/cache@v3
         with:
           path: kernel/android-kernel-tools
-          key: akitlove-toolchain-official-2025
+          key: akitlove-clang-r428724-2025
 
       - name: Clone Akitlove Kernel Tools
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           cd kernel
           git clone https://github.com/Akitlove/android-kernel-tools.git android-kernel-tools
-          # 赋予编译器可执行权限（匹配真实路径）
+          # 仅赋予Clang可执行权限（仓库无GCC bin目录）
           chmod -R +x android-kernel-tools/clang/host/linux-x86/clang-r428724/bin/*
-          chmod -R +x android-kernel-tools/gcc/linux-x86/bin/* || true
 
-      - name: Configure Kernel (BPF + Compatibility + Fix Features)
-        working-directory: kernel/lavender-44
+      - name: Configure Kernel (Fix Path + BPF + Compatibility)
+        working-directory: kernel/lavender-44 # 修正工作目录（若实际是lavender则改为kernel/lavender）
         run: |
           make lavender_defconfig
           # 修复编译器特性不支持
@@ -45,34 +44,30 @@ jobs:
           scripts/config --disable LDFLAGS_FIX_CORTEX_A53_843419
           # 彻底关闭DTBO构建
           scripts/config --disable CONFIG_DTBO_BUILD
-          # 补全BPF配置（适配Android 16）
+          # 补全BPF配置
           scripts/config --enable BPF
           scripts/config --enable BPF_SYSCALL
           scripts/config --enable BPF_JIT
           make olddefconfig
 
-      - name: Compile Kernel (Akitlove Clang r428724 + Skip DTBO)
-        working-directory: kernel/lavender-44
+      - name: Compile Kernel (Akitlove Clang Only + Skip DTBO)
+        working-directory: kernel/lavender-44 # 与上方工作目录保持一致
         run: |
-          # 配置Akitlove Clang真实路径（核心修正）
+          # 配置Clang真实路径
           export CLANG_PATH=$(pwd)/../android-kernel-tools/clang/host/linux-x86/clang-r428724
-          export GCC_PATH=$(pwd)/../android-kernel-tools/gcc/linux-x86
-          # 环境变量配置
           export CC=$CLANG_PATH/bin/clang
           export CXX=$CLANG_PATH/bin/clang++
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=$GCC_PATH/bin/aarch64-linux-android-
           export ARCH=arm64
-          export PATH=$CLANG_PATH/bin:$GCC_PATH/bin:$PATH
+          export PATH=$CLANG_PATH/bin:$PATH
 
-          # 编译内核，双重跳过DTBO
+          # 用纯Clang编译内核
           make -j$(nproc) Image.gz-dtb \
             NO_DTBO=1 \
             DTBO_IMG= \
             CC=$CC \
             CXX=$CXX \
             CLANG_TRIPLE=$CLANG_TRIPLE \
-            CROSS_COMPILE=$CROSS_COMPILE \
             ARCH=$ARCH
           
           # 验证产物
@@ -82,20 +77,18 @@ jobs:
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
-          # 适配Lavender设备
           sed -i 's/device.name1=/device.name1=lavender/' anykernel.sh
           sed -i 's/device.name2=/device.name2=Redmi Note 7/' anykernel.sh
-          sed -i 's/device.name3=/device.name3=Redmi Note 7 Pro/' anykernel.sh
 
       - name: Pack Flashable Zip
         run: |
           cp kernel/lavender-44/arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
-          zip -r9 Lavender-Kernel-Akitlove-Clang-r428724-$(date +%Y%m%d-%H%M).zip * -x .git* README.md *.sh
+          zip -r9 Lavender-Kernel-Akitlove-Clang-$(date +%Y%m%d).zip * -x .git* README.md *.sh
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: Lavender-Kernel-Build
-          path: anykernel/Lavender-Kernel-Akitlove-Clang-r428724-*.zip
+          path: anykernel/Lavender-Kernel-Akitlove-Clang-*.zip
           retention-days: 7
