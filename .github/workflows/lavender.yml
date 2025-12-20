@@ -1,4 +1,4 @@
-name: Lavender SDM660 Build (zako~kernel + LLVM 19.1.0 + Fix Dir)
+name: Lavender SDM660 Build (zako~kernel + LLVM 19.1.0 + Fix Kconfig)
 
 on:
   workflow_dispatch:
@@ -15,36 +15,25 @@ jobs:
           sudo rm -rf /home/runner/actions-runner/_work/_temp/* /home/runner/actions-runner/_work/_cache/*
           df -h /
 
-      - name: Checkout Kernel Source (Light)
+      # 核心修复：移除稀疏检出，完整克隆源码（解决Kconfig文件缺失）
+      - name: Checkout Kernel Source (Full)
         uses: actions/checkout@v4
         with:
           repository: jsdizkcksv/android_kernel_xiaomi_sdm660
           path: kernel
           submodules: false
-          fetch-depth: 1
-          sparse-checkout: |
-            arch/arm64
-            include
-            scripts
-            Makefile
-            .config
+          fetch-depth: 1 # 仅克隆最新提交，减少体积
 
-      # 核心修复：提前创建LLVM目标目录
       - name: Create LLVM Directory First
         run: |
           mkdir -p ${{ github.workspace }}/llvm-19.1.0
           ls -ld ${{ github.workspace }}/llvm-19.1.0/
 
-      # 修复流式解压指令，确保文件移动正确
       - name: Download & Extract LLVM 19.1.0 (Stream + Fix)
         run: |
-          # 流式解压到临时目录
           wget -q -O - https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz | tar -xJ -C /tmp/
-          # 移动解压后的文件到提前创建的目录
           mv /tmp/LLVM-19.1.0-Linux-X64/* ${{ github.workspace }}/llvm-19.1.0/
-          # 赋予执行权限
           chmod -R +x ${{ github.workspace }}/llvm-19.1.0/bin/
-          # 删除临时文件
           rm -rf /tmp/LLVM-19.1.0-Linux-X64
           du -sh ${{ github.workspace }}/llvm-19.1.0/
 
@@ -54,11 +43,20 @@ jobs:
             bc bison flex libssl-dev libelf-dev dwarves make gcc-aarch64-linux-gnu
           sudo apt clean
 
+      # 新增：验证Kconfig文件是否存在
+      - name: Verify Kconfig Files
+        working-directory: kernel
+        run: |
+          ls -l arch/arm64/Kconfig
+          ls -l init/Kconfig || echo "init/Kconfig exists"
+
       - name: Configure Kernel (zako~kernel + Slim)
         working-directory: kernel
         run: |
           export ARCH=arm64
-          make lavender_defconfig
+          # 核心：指定完整的配置文件路径，避免查找错误
+          make O=out lavender_defconfig
+          cd out
           scripts/config --set-str LOCALVERSION "-zako~kernel"
           scripts/config --disable COMPAT --disable COMPAT_VDSO --disable CONFIG_DTBO_BUILD
           scripts/config --disable DEBUG_INFO --disable KERNEL_DEBUG --disable TRACEPOINTS
@@ -77,13 +75,14 @@ jobs:
           export PATH=$LLVM_DIR/bin:$PATH
           export KBUILD_CFLAGS="-O2 -g0 -ffunction-sections -fdata-sections"
           export KBUILD_LDFLAGS="--gc-sections"
-          make -j2 ARCH=arm64 Image.gz-dtb NO_DTBO=1
-          ls -lh arch/arm64/boot/Image.gz-dtb
+          # 使用out目录编译，避免源码目录污染
+          make -j2 O=out ARCH=arm64 Image.gz-dtb NO_DTBO=1
+          ls -lh out/arch/arm64/boot/Image.gz-dtb
 
       - name: Pack & Upload Kernel
         run: |
           mkdir -p output
-          cp kernel/arch/arm64/boot/Image.gz-dtb output/
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb output/
           cd output
           zip -9 -m lavender-zako-kernel-llvm19.zip Image.gz-dtb
           ls -lh *.zip
