@@ -1,30 +1,42 @@
-name: Build Lavender-zako-kernel (AK3-U20.04)
+name: Build Lavender-zako-kernel (AK3-U22.04-Fix)
 on:
-  workflow_dispatch: # 仅手动触发，避免自动编译消耗资源
+  workflow_dispatch: # 仅手动触发，规避2FA自动执行限制
 
 jobs:
   build:
-    runs-on: ubuntu-20.04 # 更换为20.04，gcc-9默认，兼容4.4内核
+    runs-on: ubuntu-22.04
     steps:
-      - name: 清空根目录+拉取内核源码
+      - name: 配置Git凭据（解决2FA克隆限制）
+        run: |
+          git config --global credential.helper cache
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 清空根目录+拉取内核源码（用Token克隆）
         run: |
           rm -rf * .git
-          git clone https://github.com/jsdizkcksv/android_kernel_xiaomi_sdm660.git . --recursive --depth=1
+          git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/jsdizkcksv/android_kernel_xiaomi_sdm660.git . --recursive --depth=1
 
-      - name: 安装Ubuntu20.04完整编译依赖（gcc-9原生）
+      - name: 安装低版本gcc-9（兼容4.4内核）
         run: |
           sudo apt update -y
-          sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf \
+          sudo apt install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt update -y
+          sudo apt install -y gcc-9-aarch64-linux-gnu gcc-9-arm-linux-gnueabihf \
           make bc bison flex libssl-dev libelf-dev git python3 zip unzip \
           libncurses5-dev libncursesw5-dev pkg-config libc6-dev-i386 \
           crossbuild-essential-armhf crossbuild-essential-arm64
+          # 软链接替换默认gcc为9版本
+          sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-9 /usr/bin/aarch64-linux-gnu-gcc
+          sudo ln -sf /usr/bin/arm-linux-gnueabihf-gcc-9 /usr/bin/arm-linux-gnueabihf-gcc
 
-      - name: 内核配置（echo逐条追加BPF依赖+自定义内核名）
+      - name: 内核配置（BPF全依赖+自定义内核名）
         run: |
-          # 基础配置
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- lavender_defconfig
-          
-          # BPF全依赖配置
+          # 逐条追加BPF依赖
           echo "CONFIG_BPF=y" >> .config
           echo "CONFIG_BPF_SYSCALL=y" >> .config
           echo "CONFIG_BPF_JIT=y" >> .config
@@ -36,18 +48,17 @@ jobs:
           echo "CONFIG_BPFILTER=y" >> .config
           echo "CONFIG_BPFILTER_UMH=y" >> .config
           echo "CONFIG_BPF_PRELOAD=y" >> .config
-          
           # 处理配置依赖
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- olddefconfig
           # 修改内核名-zako~kernel
           sed -i 's/^LOCALVERSION=.*/LOCALVERSION=-zako~kernel/' Makefile
 
-      - name: 编译内核（低并发+兜底，避免资源超限）
+      - name: 编译内核（单线程+彻底屏蔽警告）
         run: |
-          make -j2 V=1 ARCH=arm64 \
+          make -j1 V=1 ARCH=arm64 \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabihf- \
-          KCFLAGS=-Wno-error \
+          KCFLAGS="-Wno-error -Wno-all -Wno-misleading-indentation -Wno-pointer-type-mismatch" \
           Image.gz-dtb
 
       - name: 拉取AK3打包工具
@@ -58,12 +69,12 @@ jobs:
       - name: 打包AK3刷机包
         run: |
           cd anykernel3
-          zip -r9 zako-kernel-lavender-$(date +%Y%m%d).zip * -x .git* README.md *.sh .gitignore
+          zip -r9 "zako-kernel-lavender-$(date +%Y%m%d).zip" * -x .git* README.md *.sh .gitignore
 
       - name: 上传产物（保留7天）
         uses: actions/upload-artifact@v4
         with:
-          name: zako-kernel-lavender-AK3-U20.04
+          name: zako-kernel-lavender-AK3-U22.04
           path: anykernel3/*.zip
           retention-days: 7
 
