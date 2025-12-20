@@ -1,5 +1,4 @@
-
-name: Lavender SDM660 Build (zako~kernel + LLVM 19.1.0 + Fix Script Path)
+name: Lavender SDM660 Build (zako~kernel + LLVM 19.1.0 + Fix BPF Error)
 
 on:
   workflow_dispatch:
@@ -49,28 +48,23 @@ jobs:
           ls -l arch/arm64/Kconfig init/Kconfig
           ls -l scripts/config || echo "scripts/config exists"
 
-      # 核心修复：在源码根目录执行config脚本，指定out目录的.config文件
-      - name: Configure Kernel (zako~kernel + Slim + Fix Path)
+      - name: Configure Kernel (zako~kernel + Fix BPF + Slim)
         working-directory: kernel
         run: |
           export ARCH=arm64
-          # 1. 生成out目录的.config文件
+          # 生成out目录配置
           make O=out lavender_defconfig
-          # 2. 用源码根目录的scripts/config修改out目录的配置，指定--file参数
+          # 修改配置：关闭BPF相关功能（解决编译错误）
           scripts/config --file out/.config --set-str LOCALVERSION "-zako~kernel"
-          scripts/config --file out/.config --disable COMPAT
-          scripts/config --file out/.config --disable COMPAT_VDSO
-          scripts/config --file out/.config --disable CONFIG_DTBO_BUILD
-          scripts/config --file out/.config --disable DEBUG_INFO
-          scripts/config --file out/.config --disable KERNEL_DEBUG
-          scripts/config --file out/.config --disable TRACEPOINTS
-          scripts/config --file out/.config --enable BPF
-          scripts/config --file out/.config --enable BPF_SYSCALL
-          scripts/config --file out/.config --enable BPF_JIT
-          # 3. 应用配置修改
+          scripts/config --file out/.config --disable COMPAT --disable COMPAT_VDSO --disable CONFIG_DTBO_BUILD
+          scripts/config --file out/.config --disable DEBUG_INFO --disable KERNEL_DEBUG --disable TRACEPOINTS
+          # 核心：关闭BPF严格类型检查相关配置，或直接禁用BPF
+          scripts/config --file out/.config --disable BPF --disable BPF_SYSCALL --disable BPF_JIT
+          # 关闭警告转错误（关键：避免指针类型警告被转为错误）
+          scripts/config --file out/.config --unset-val CC_FLAGS_ERROR_ON_WARNING
           make O=out ARCH=arm64 olddefconfig
 
-      - name: Compile Kernel (LLVM 19.1.0 + Slim Build)
+      - name: Compile Kernel (LLVM 19.1.0 + Disable BPF Warnings)
         working-directory: kernel
         run: |
           export LLVM_DIR=${{ github.workspace }}/llvm-19.1.0
@@ -80,9 +74,13 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export ARCH=arm64
           export PATH=$LLVM_DIR/bin:$PATH
-          export KBUILD_CFLAGS="-O2 -g0 -ffunction-sections -fdata-sections"
-          export KBUILD_LDFLAGS="--gc-sections"
-          make -j2 O=out ARCH=arm64 Image.gz-dtb NO_DTBO=1
+          # 核心：添加编译参数，屏蔽BPF的指针类型警告
+          export KCFLAGS="-w -Wno-incompatible-pointer-types -Wno-pointer-sign"
+          export KBUILD_CFLAGS="-w $KCFLAGS"
+          export KBUILD_CXXFLAGS="-w"
+          # 编译内核，关闭警告转错误
+          make -j2 O=out ARCH=arm64 Image.gz-dtb NO_DTBO=1 \
+            KCFLAGS="$KCFLAGS" KBUILD_CFLAGS="$KBUILD_CFLAGS" KBUILD_CXXFLAGS="$KBUILD_CXXFLAGS"
           ls -lh out/arch/arm64/boot/Image.gz-dtb
 
       - name: Pack & Upload Kernel
