@@ -2,23 +2,23 @@ name: Build Lavender 4.4 Kernel (BPF+Custom Name)
 on:
   push:
     branches: [main]
-  workflow_dispatch: # 手动触发，优先级更高
+  workflow_dispatch:
 
 jobs:
   build_kernel:
-    runs-on: ubuntu-22.04 # 新版运行器，调度更快+兼容4.4内核
-    timeout-minutes: 120 # 延长超时时间，避免编译中断
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
     steps:
       - name: 1. 配置Git拉取深度
         run: git config --global core.compression 0
 
-      - name: 2. 拉取lavender内核源码
+      - name: 2. 拉取lavender内核源码（修正为13分支）
         uses: actions/checkout@v4
         with:
           repository: projects-nexus/nexus_kernel_xiaomi_lavender
-          ref: master
+          ref: 13 # 关键修正：使用仓库默认的13分支
           path: kernel
-          fetch-depth: 0 # 拉取完整历史，避免补丁合并冲突
+          fetch-depth: 0
 
       - name: 3. 拉取BPF补丁仓库
         uses: actions/checkout@v4
@@ -28,11 +28,10 @@ jobs:
           path: patch_repo
           fetch-depth: 1
 
-      - name: 4. 安装编译依赖（适配ubuntu-22.04+4.4内核）
+      - name: 4. 安装编译依赖
         run: |
           sudo apt update && sudo apt upgrade -y
           sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi make git wget zip unzip patch bc bison flex libssl-dev libelf-dev libncurses5-dev libncursesw5-dev crossbuild-essential-arm64 crossbuild-essential-armhf
-          # 安装4.4内核编译兼容的旧版工具（可选）
           sudo apt install -y gcc-10-aarch64-linux-gnu gcc-10-arm-linux-gnueabi
           sudo update-alternatives --set aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-10
           sudo update-alternatives --set arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-10
@@ -46,9 +45,7 @@ jobs:
       - name: 6. 加载lavender配置并开启BPF项
         run: |
           cd kernel
-          # 加载默认配置
           make ARCH=arm64 lavender_defconfig
-          # 开启指定BPF配置
           scripts/config --enable CONFIG_CGROUP_BPF
           scripts/config --enable CONFIG_BPF
           scripts/config --enable CONFIG_BPF_SYSCALL
@@ -57,26 +54,21 @@ jobs:
           scripts/config --enable CONFIG_NET_CLS_BPF
           scripts/config --enable CONFIG_BPF_JIT
           scripts/config --enable CONFIG_HAVE_EBPF_JIT
-          # 保存配置
           make ARCH=arm64 olddefconfig
           echo "✅ BPF配置全部开启"
 
       - name: 7. 修改内核名（zako～kernel）
         run: |
           cd kernel
-          # 配置文件修改
           scripts/config --set-str LOCALVERSION "-zako～kernel"
           make ARCH=arm64 olddefconfig
-          # Makefile兜底
           echo 'LOCALVERSION := -zako～kernel' >> Makefile
-          # AnyKernel3显示名（如有）
           [ -d "AnyKernel3" ] && sed -i 's/^kernel.string=.*/kernel.string=zako～kernel/' AnyKernel3/anykernel.sh
           echo "✅ 内核名修改完成"
 
-      - name: 8. 编译内核（适配新版编译器）
+      - name: 8. 编译内核
         run: |
           cd kernel
-          # 环境变量配置
           export CROSS_COMPILE=aarch64-linux-gnu-
           export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
           export CC=aarch64-linux-gnu-gcc-10
@@ -84,16 +76,13 @@ jobs:
           export ARCH=arm64
           export KBUILD_BUILD_USER=AL1S69
           export KBUILD_BUILD_HOST=GitHubActions
-          # 编译（多核+禁用警告转错）
           make -j$(nproc) KCFLAGS=-Wno-error KCFLAGS+=-Wno-dangling-pointer KCFLAGS+=-Wno-incompatible-pointer-types
           echo "✅ 内核编译完成"
 
       - name: 9. 打包可刷内核包
         run: |
           cd kernel
-          # 检查镜像文件
           if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
-            # 若无AnyKernel3，自动拉取适配版
             if [ ! -d "AnyKernel3" ]; then
               git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
               sed -i 's/kernel.string=.*/kernel.string=zako～kernel/' AnyKernel3/anykernel.sh
