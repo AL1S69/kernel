@@ -34,18 +34,14 @@ jobs:
             libelf-dev \
             dwarves \
             git
+          # 移除无效的libclang-rt包安装
 
       - name: Download & Extract LLVM 19.1.0
         run: |
-          # 下载LLVM 19.1.0工具链
           wget https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz -O llvm-19.1.0.tar.xz
-          # 解压到/usr/local/llvm
           sudo tar -xf llvm-19.1.0.tar.xz -C /usr/local/
           sudo ln -s /usr/local/LLVM-19.1.0-Linux-X64 /usr/local/llvm
-          # 添加LLVM到环境变量
           echo "PATH=/usr/local/llvm/bin:$PATH" >> $GITHUB_ENV
-          # 安装LLVM的arm32编译依赖（clang交叉编译arm32需libclang-rt）
-          sudo apt install -y libclang-rt-19-dev-armhf-cross
 
       - name: Set Environment Variables (LLVM)
         run: |
@@ -53,15 +49,18 @@ jobs:
           echo "CC=clang" >> $GITHUB_ENV
           echo "CXX=clang++" >> $GITHUB_ENV
           echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
-          echo "CROSS_COMPILE_ARM32=arm-linux-gnueabihf-" >> $GITHUB_ENV
           echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
           echo "KERNEL_PATH=$(pwd)/kernel" >> $GITHUB_ENV
 
-      - name: Build Kernel (LLVM + Skip DTBO)
+      - name: Build Kernel (LLVM + Skip DTBO + Disable ARM32)
         working-directory: ${{ env.KERNEL_PATH }}
         run: |
           # 加载默认配置
           make lavender_defconfig
+          # 关闭arm32兼容，避免依赖arm32编译器
+          scripts/config --disable COMPAT
+          scripts/config --disable COMPAT_VDSO
+          make -j$(nproc) olddefconfig
           # 用LLVM编译内核，跳过DTBO
           make -j$(nproc) Image.gz-dtb NO_DTBO=1 \
             CC=clang \
