@@ -1,11 +1,11 @@
-name: Lavender Kernel Build (Skip DTBO)
+name: Lavender Kernel Build (LLVM 19.1.0 + Skip DTBO)
 
 on:
   push:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch: # 手动触发编译
+  workflow_dispatch:
 
 jobs:
   build-kernel:
@@ -19,59 +19,75 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      - name: Install Dependencies
+      - name: Install Basic Dependencies
         run: |
           sudo apt update
           sudo apt install -y \
-            gcc-aarch64-linux-gnu \
-            gcc-arm-linux-gnueabi \
-            make \
-            libssl-dev \
+            wget \
+            tar \
+            unzip \
+            zip \
             bc \
             bison \
             flex \
+            libssl-dev \
             libelf-dev \
             dwarves \
-            git \
-            zip \
-            unzip \
-            wget
+            git
 
-      - name: Set Environment Variables
+      - name: Download & Extract LLVM 19.1.0
+        run: |
+          # 下载LLVM 19.1.0工具链
+          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz -O llvm-19.1.0.tar.xz
+          # 解压到/usr/local/llvm
+          sudo tar -xf llvm-19.1.0.tar.xz -C /usr/local/
+          sudo ln -s /usr/local/LLVM-19.1.0-Linux-X64 /usr/local/llvm
+          # 添加LLVM到环境变量
+          echo "PATH=/usr/local/llvm/bin:$PATH" >> $GITHUB_ENV
+          # 安装LLVM的arm32编译依赖（clang交叉编译arm32需libclang-rt）
+          sudo apt install -y libclang-rt-19-dev-armhf-cross
+
+      - name: Set Environment Variables (LLVM)
         run: |
           echo "ARCH=arm64" >> $GITHUB_ENV
+          echo "CC=clang" >> $GITHUB_ENV
+          echo "CXX=clang++" >> $GITHUB_ENV
           echo "CROSS_COMPILE=aarch64-linux-gnu-" >> $GITHUB_ENV
+          echo "CROSS_COMPILE_ARM32=arm-linux-gnueabihf-" >> $GITHUB_ENV
+          echo "CLANG_TRIPLE=aarch64-linux-gnu-" >> $GITHUB_ENV
           echo "KERNEL_PATH=$(pwd)/kernel" >> $GITHUB_ENV
 
-      - name: Build Kernel (Skip DTBO)
+      - name: Build Kernel (LLVM + Skip DTBO)
         working-directory: ${{ env.KERNEL_PATH }}
         run: |
           # 加载默认配置
           make lavender_defconfig
-          # 编译内核主体，NO_DTBO=1跳过DTBO构建
-          make -j$(nproc) Image.gz-dtb NO_DTBO=1
-          # 验证编译产物
+          # 用LLVM编译内核，跳过DTBO
+          make -j$(nproc) Image.gz-dtb NO_DTBO=1 \
+            CC=clang \
+            CXX=clang++ \
+            CLANG_TRIPLE=aarch64-linux-gnu-
+          # 验证产物
           ls -l arch/arm64/boot/Image.gz-dtb
 
       - name: Clone AnyKernel3
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
-          # 适配lavender设备信息（可根据实际需求修改）
           sed -i 's/device.name1=/device.name1=lavender/' anykernel.sh
           sed -i 's/device.name2=/device.name2=Redmi Note 7/' anykernel.sh
+          sed -i 's/device.name3=/device.name3=Redmi Note 7 Pro/' anykernel.sh
+          sed -i 's/device.name4=/device.name4=Redmi Note 7S/' anykernel.sh
 
       - name: Pack Flashable Zip
         run: |
-          # 复制内核产物到AnyKernel3目录
           cp ${{ env.KERNEL_PATH }}/arch/arm64/boot/Image.gz-dtb anykernel/
-          # 打包刷入包
           cd anykernel
-          zip -r9 Lavender-Kernel-$(date +%Y%m%d).zip * -x .git* README.md *.sh
+          zip -r9 Lavender-Kernel-LLVM19-$(date +%Y%m%d-%H%M).zip * -x .git* README.md *.sh
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lavender-Kernel-Build
-          path: anykernel/Lavender-Kernel-*.zip
-          retention-days: 7 # 产物保留7天
+          name: Lavender-Kernel-LLVM19-Build
+          path: anykernel/Lavender-Kernel-LLVM19-*.zip
+          retention-days: 7
