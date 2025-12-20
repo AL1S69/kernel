@@ -6,12 +6,14 @@ jobs:
   build_and_pack:
     runs-on: ubuntu-22.04
     steps:
-      - name: 1. Install Dependencies
+      - name: 1. Install Dependencies (修复权限)
         run: |
-          sudo apt update -y && sudo apt install -y --no-install-recommends \
+          # 跳过apt clean（避免权限错误），仅更新并安装依赖
+          sudo apt update -y
+          sudo apt install -y --no-install-recommends \
           git make bison flex gcc-aarch64-linux-gnu bc libssl1.1 libelf-dev \
           python3 curl liblz4-tool zstd xz-utils libncurses5-dev patch zip
-          sudo apt clean && rm -rf /var/lib/apt/lists/*
+          # 移除rm /var/lib/apt/lists的操作，避免权限拒绝
 
       - name: 2. Clone Kernel Source
         run: |
@@ -33,7 +35,7 @@ jobs:
           cd ${{ env.KERNEL_DIR }}
           wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz -O llvm.tar.xz
           mkdir -p llvm-19.1.0 && tar -xf llvm.tar.xz -C llvm-19.1.0 --strip-components=1
-          rm -f llvm.tar.xz
+          rm -f llvm.tar.xz # 仅删除下载的压缩包，无权限问题
           echo "LLVM_DIR=$(pwd)/llvm-19.1.0" >> $GITHUB_ENV
           echo "CLANG_DIR=$(pwd)/llvm-19.1.0/bin" >> $GITHUB_ENV
 
@@ -103,7 +105,4 @@ jobs:
         run: |
           cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/Image ${{ env.ANYKERNEL_DIR }}/zImage
           cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/dtbo.img ${{ env.ANYKERNEL_DIR }}/dtbo.img
-          cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/dts/qcom/sdm660-lavender.dtb ${{ env.ANYKERNEL_DIR }}/dtb
-
-      - name: 10. Pack Flashable Zip
-        run: |
+          cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/dts/qcom/sdm660-lavender.dtb ${{ env.ANYKERNEL_
