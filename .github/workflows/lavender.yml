@@ -1,100 +1,93 @@
-name: Build & Pack Lavender 4.4 Kernel (Akitlove-Tools+AnyKernel3-Aonly)
-on: workflow_dispatch
+name: Build & Pack Lavender Kernel (Akitlove Toolchain)
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build_and_pack:
     runs-on: ubuntu-22.04
     steps:
-      - name: 1. Install Basic Dependencies
-        run: |
-          sudo apt update -y
-          sudo apt install -y --no-install-recommends \
-          git make bison flex bc libssl1.1 libelf-dev python3 curl liblz4-tool zstd xz-utils libncurses5-dev patch zip
-          sudo apt clean
+      - name: Checkout Kernel Source
+        uses: actions/checkout@v4
+        with:
+          path: kernel
+          submodules: recursive
+          fetch-depth: 0
 
-      - name: 2. Clone Lavender 4.4 Kernel Source
-        run: |
-          git clone -b main --depth=1 https://github.com/jsdizkcksv/android_kernel_xiaomi_sdm660.git lavender-44
-          cd lavender-44
-          echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
-          git submodule update --init --depth=1 || true
-
-      - name: 3. Cache Akitlove Toolchain
-        id: cache-tools
+      - name: Cache Akitlove Toolchain
+        id: cache-toolchain
         uses: actions/cache@v3
         with:
-          path: ./android-kernel-tools
-          key: akitlove-tools-lavender44
+          path: kernel/android-kernel-tools
+          key: akitlove-toolchain-2025
 
-      - name: 4. Clone Akitlove Kernel Tools
-        if: steps.cache-tools.outputs.cache-hit != 'true'
+      - name: Clone Akitlove Kernel Tools
+        if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
-          git clone --depth=1 https://github.com/Akitlove/android-kernel-tools.git
-          echo "TOOLCHAIN_DIR=$(pwd)/android-kernel-tools" >> $GITHUB_ENV
+          cd kernel
+          # 克隆官方Akitlove工具链仓库
+          git clone https://github.com/Akitlove/android-kernel-tools.git android-kernel-tools
+          # 赋予工具链可执行权限（关键：避免权限不足导致无法调用）
+          chmod -R +x android-kernel-tools/gcc/bin/*
 
-      - name: 5. Configure Kernel (BPF + Compatibility)
+      - name: Configure Kernel (BPF + Compatibility + Fix Features)
+        working-directory: kernel/lavender-44
         run: |
-          cd $KERNEL_DIR
-          make O=out ARCH=arm64 lavender_defconfig
-          echo "CONFIG_BPF=y" >> out/.config
-          echo "CONFIG_BPF_SYSCALL=y" >> out/.config
-          echo "CONFIG_BPF_JIT=y" >> out/.config
-          echo "CONFIG_NET_CLS_BPF=y" >> out/.config
-          echo "CONFIG_NET_ACT_BPF=y" >> out/.config
-          echo "CONFIG_MODULES=y" >> out/.config
-          echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
-          echo "CONFIG_COMPAT_VDSO=n" >> out/.config
-          echo "CONFIG_LTO=n" >> out/.config
-          echo "CONFIG_DEBUG_SECTION_MISMATCH=n" >> out/.config
-          echo "CONFIG_WERROR=n" >> out/.config
-          yes "" | make O=out ARCH=arm64 olddefconfig
-          grep -E "CONFIG_BPF=y" out/.config || { echo "BPF Config Failed" && exit 1; }
+          make lavender_defconfig
+          # 修复编译器特性不支持
+          scripts/config --disable CC_STACKPROTECTOR_STRONG
+          scripts/config --enable CC_STACKPROTECTOR_BASIC
+          # 关闭链接器不支持的Cortex-A53 erratum修复
+          scripts/config --disable LDFLAGS_FIX_CORTEX_A53_843419
+          # 彻底关闭DTBO构建
+          scripts/config --disable CONFIG_DTBO_BUILD
+          # 补全BPF配置（适配Android 16需求）
+          scripts/config --enable BPF
+          scripts/config --enable BPF_SYSCALL
+          scripts/config --enable BPF_JIT
+          make olddefconfig
 
-      - name: 6. Compile Kernel (Akitlove Toolchain)
+      - name: Compile Kernel (Akitlove Toolchain + Skip DTBO)
+        working-directory: kernel/lavender-44
         run: |
-          cd $KERNEL_DIR
+          # 配置Akitlove工具链路径（匹配仓库目录结构）
+          export TOOLCHAIN_PATH=$(pwd)/../android-kernel-tools/gcc/bin
+          export CROSS_COMPILE=$TOOLCHAIN_PATH/aarch64-elf-
           export ARCH=arm64
-          export SUBARCH=arm64
-          export CROSS_COMPILE=$TOOLCHAIN_DIR/gcc/bin/aarch64-elf-
-          export CROSS_COMPILE_ARM32=$TOOLCHAIN_DIR/gcc/bin/arm-eabi-
-          export CC=$CROSS_COMPILE-gcc
-          export LD=$CROSS_COMPILE-ld
-          export AR=$CROSS_COMPILE-ar
-          export NM=$CROSS_COMPILE-nm
-          export OBJCOPY=$CROSS_COMPILE-objcopy
-          export OBJDUMP=$CROSS_COMPILE-objdump
-          export STRIP=$CROSS_COMPILE-strip
+          export PATH=$TOOLCHAIN_PATH:$PATH
+
+          # 编译内核，双重跳过DTBO
+          make -j$(nproc) Image.gz-dtb \
+            NO_DTBO=1 \
+            DTBO_IMG= \
+            CROSS_COMPILE=$CROSS_COMPILE \
+            ARCH=$ARCH
           
-          export KBUILD_CFLAGS="-fno-pie -no-pie -Wno-error=asm-operand-widths -Wno-error=deprecated-declarations"
-          export MAKEFLAGS="-j$(nproc)"
-          make -j$(nproc) O=out ARCH=arm64 Image dtbo.img dtbs > build.log 2>&1 || { cat build.log && exit 1; }
+          # 验证产物
+          ls -l arch/arm64/boot/Image.gz-dtb
 
-      - name: 7. Clone AnyKernel3 (A-only)
+      - name: Clone AnyKernel3
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel3
-          cd anykernel3
-          sed -i 's/device.name1=.*/device.name1=lavender/' anykernel.sh
-          sed -i 's/block=.*/block=\/dev\/block\/bootdevice\/by-name\/boot/' anykernel.sh
-          sed -i 's/is_slot_device=auto/is_slot_device=no/' anykernel.sh
-          sed -i 's/skip_dtbo=0/skip_dtbo=1/' anykernel.sh
-          echo "ANYKERNEL_DIR=$(pwd)" >> $GITHUB_ENV
+          git clone https://github.com/osm0sis/AnyKernel3.git anykernel
+          cd anykernel
+          # 适配Lavender设备
+          sed -i 's/device.name1=/device.name1=lavender/' anykernel.sh
+          sed -i 's/device.name2=/device.name2=Redmi Note 7/' anykernel.sh
+          sed -i 's/device.name3=/device.name3=Redmi Note 7 Pro/' anykernel.sh
 
-      - name: 8. Copy Build Products
+      - name: Pack Flashable Zip
         run: |
-          cp $KERNEL_DIR/out/arch/arm64/boot/Image $ANYKERNEL_DIR/zImage
-          cp $KERNEL_DIR/out/arch/arm64/boot/dtbo.img $ANYKERNEL_DIR/dtbo.img
-          cp $KERNEL_DIR/out/arch/arm64/boot/dts/qcom/sdm660-lavender.dtb $ANYKERNEL_DIR/dtb
+          cp kernel/lavender-44/arch/arm64/boot/Image.gz-dtb anykernel/
+          cd anykernel
+          zip -r9 Lavender-Kernel-Akitlove-$(date +%Y%m%d-%H%M).zip * -x .git* README.md *.sh
 
-      - name: 9. Pack Flashable Zip
-        run: |
-          cd $ANYKERNEL_DIR
-          zip -r9 Lavender-4.4-Kernel-Akitlove-Aonly.zip * -x .git* README.md *.sh
-          mkdir -p $KERNEL_DIR/final-output
-          cp Lavender-4.4-Kernel-Akitlove-Aonly.zip $KERNEL_DIR/final-output/
-
-      - name: 10. Upload Artifact
+      - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lavender-Aonly-Kernel-Akitlove
-          path: $KERNEL_DIR/final-output/*.zip
-          retention-days: 14
+          name: Lavender-Kernel-Build
+          path: anykernel/Lavender-Kernel-Akitlove-*.zip
+          retention-days: 7
