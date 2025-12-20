@@ -1,0 +1,110 @@
+name: Build & Pack Lavender 4.4 Kernel (LLVM19+AnyKernel3-Aonly)
+on: workflow_dispatch
+
+jobs:
+  build_and_pack:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 1. 安装基础依赖
+        run: |
+          sudo apt update -y && sudo apt install -y --no-install-recommends \
+          git make bison flex gcc-aarch64-linux-gnu bc libssl1.1 libelf-dev \
+          python3 curl liblz4-tool zstd xz-utils libncurses5-dev patch zip
+          sudo apt clean && rm -rf /var/lib/apt/lists/*
+
+      - name: 2. 克隆lavender 4.4内核源码
+        run: |
+          git clone -b main --depth=1 https://github.com/jsdizkcksv/android_kernel_xiaomi_sdm660.git lavender-44
+          cd lavender-44
+          echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
+          git submodule update --init --depth=1 || true
+
+      - name: 3. 缓存LLVM 19.1.0工具链
+        id: cache-llvm
+        uses: actions/cache@v3
+        with:
+          path: ./lavender-44/llvm-19.1.0
+          key: llvm-19.1.0-lavender44
+
+      - name: 4. 下载并解压LLVM 19.1.0
+        if: steps.cache-llvm.outputs.cache-hit != 'true'
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz -O llvm.tar.xz
+          mkdir -p llvm-19.1.0 && tar -xf llvm.tar.xz -C llvm-19.1.0 --strip-components=1
+          rm -f llvm.tar.xz
+          echo "LLVM_DIR=$(pwd)/llvm-19.1.0" >> $GITHUB_ENV
+          echo "CLANG_DIR=$(pwd)/llvm-19.1.0/bin" >> $GITHUB_ENV
+
+      - name: 5. 集成SukiSU-Ultra
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s main
+          [ -d KernelSU ] || exit 1
+          echo 'EXTRA_CFLAGS += -std=c99 -Wno-gcc-compat -Wno-incompatible-pointer-types' >> drivers/kernelsu/kpm/Makefile
+          echo 'EXTRA_CFLAGS += -Wno-implicit-function-declaration -Wno-typedef-redefinition' >> drivers/kernelsu/Makefile
+
+      - name: 6. 加载lavender配置+分步追加BPF+SUKISU
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          make O=out ARCH=arm64 lavender_defconfig
+          # ✨分步echo追加，无EOF，零语法错
+          echo "CONFIG_BPF=y" >> out/.config
+          echo "CONFIG_BPF_SYSCALL=y" >> out/.config
+          echo "CONFIG_BPF_JIT=y" >> out/.config
+          echo "CONFIG_NET_CLS_BPF=y" >> out/.config
+          echo "CONFIG_NET_ACT_BPF=y" >> out/.config
+          echo "CONFIG_KALLSYMS=y" >> out/.config
+          echo "CONFIG_KALLSYMS_ALL=y" >> out/.config
+          echo "CONFIG_KPROBES=y" >> out/.config
+          echo "CONFIG_HAVE_KPROBES=y" >> out/.config
+          echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
+          echo "CONFIG_KSU=y" >> out/.config
+          echo "CONFIG_KPM=y" >> out/.config
+          echo "CONFIG_MODULES=y" >> out/.config
+          echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
+          echo "CONFIG_DEBUG_INFO_BTF=n" >> out/.config
+          echo "CONFIG_CC_STD_C99=n" >> out/.config
+          echo "CONFIG_LTO=n" >> out/.config
+          # 固化配置
+          yes "" | make O=out ARCH=arm64 olddefconfig
+          grep -E "CONFIG_BPF=y|CONFIG_KSU=y" out/.config || { echo 配置失效 && exit 1; }
+
+      - name: 7. 编译lavender 4.4内核
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CC=${{ env.CLANG_DIR }}/clang
+          export CLANG_TRIPLE=aarch64-linux-gnu-
+          export LD=${{ env.CLANG_DIR }}/ld.lld
+          export AR=${{ env.CLANG_DIR }}/llvm-ar
+          export NM=${{ env.CLANG_DIR }}/llvm-nm
+          export OBJCOPY=${{ env.CLANG_DIR }}/llvm-objcopy
+          export OBJDUMP=${{ env.CLANG_DIR }}/llvm-objdump
+          
+          export KBUILD_LTO=none
+          export KBUILD_CFLAGS="-Wno-error=unused-command-line-argument -Wno-error=deprecated-declarations"
+          export KBUILD_FLAGS="-no-integrated-as"
+          export MAKEFLAGS="-j$(nproc)"
+          make -j$(nproc) O=out ARCH=arm64 Image dtbo.img dtbs \$KBUILD_FLAGS > build.log 2>&1 || { cat build.log && exit 1; }
+
+      - name: 8. 拉取AnyKernel3（A-only适配版）
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel3
+          cd anykernel3
+          # A-only核心配置（分步sed，更稳）
+          sed -i 's/device.name1=.*/device.name1=lavender/' anykernel.sh
+          sed -i 's/block=.*/block=\/dev\/block\/bootdevice\/by-name\/boot/' anykernel.sh
+          sed -i 's/is_slot_device=auto/is_slot_device=no/' anykernel.sh
+          sed -i 's/skip_dtbo=0/skip_dtbo=1/' anykernel.sh
+          echo "ANYKERNEL_DIR=$(pwd)" >> $GITHUB_ENV
+
+      - name: 9. 拷贝编译产物到AnyKernel3
+        run: |
+          cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/Image ${{ env.ANYKERNEL_DIR }}/zImage
+          cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/dtbo.img ${{ env.ANYKERNEL_DIR }}/dtbo.img
+          cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/dts/qcom/sdm660-lavender.dtb ${{ env.ANYKERNEL_DIR }}/dtb
+
+      - name: 10. 打包AnyKer
