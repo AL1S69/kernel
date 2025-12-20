@@ -1,97 +1,99 @@
-name: Lavender SDM660 Build (zako~kernel + LLVM 19.1.0 + Fix BPF Error)
-
+name: Build Lavender 4.4 Kernel (BPF+Custom Name)
 on:
-  workflow_dispatch:
+  push:
+    branches: [main]
+  workflow_dispatch: # 手动触发
 
 jobs:
-  build_kernel:
-    runs-on: ubuntu-22.04
+  build:
+    runs-on: ubuntu-20.04 # 适配4.4内核编译
     steps:
-      - name: Deep Clean Runner Space
-        run: |
-          sudo apt remove -y --purge firefox snapd google-chrome-stable libreoffice*
-          sudo apt autoremove -y && sudo apt clean
-          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /var/lib/docker /var/cache/apt/archives/*
-          sudo rm -rf /home/runner/actions-runner/_work/_temp/* /home/runner/actions-runner/_work/_cache/*
-          df -h /
-
-      - name: Checkout Kernel Source (Full)
+      - name: 1. 拉取指定源码（projects-nexus/lavender）
         uses: actions/checkout@v4
         with:
-          repository: jsdizkcksv/android_kernel_xiaomi_sdm660
+          repository: projects-nexus/nexus_kernel_xiaomi_lavender
+          ref: master
           path: kernel
-          submodules: false
           fetch-depth: 1
 
-      - name: Create LLVM Directory First
-        run: |
-          mkdir -p ${{ github.workspace }}/llvm-19.1.0
-          ls -ld ${{ github.workspace }}/llvm-19.1.0/
+      - name: 2. 拉取你的补丁仓库（含kernel_4.4.patch）
+        uses: actions/checkout@v4
+        with:
+          repository: AL1S69/kernel # 你的仓库
+          ref: main
+          path: patch_repo
+          fetch-depth: 1
 
-      - name: Download & Extract LLVM 19.1.0 (Stream + Fix)
+      - name: 3. 安装编译依赖
         run: |
-          wget -q -O - https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz | tar -xJ -C /tmp/
-          mv /tmp/LLVM-19.1.0-Linux-X64/* ${{ github.workspace }}/llvm-19.1.0/
-          chmod -R +x ${{ github.workspace }}/llvm-19.1.0/bin/
-          rm -rf /tmp/LLVM-19.1.0-Linux-X64
-          du -sh ${{ github.workspace }}/llvm-19.1.0/
+          sudo apt update
+          sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi make git wget zip unzip patch bc bison flex libssl-dev libelf-dev libncurses5-dev
 
-      - name: Install Minimal Dependencies
+      - name: 4. 合并BPF补丁
         run: |
-          sudo apt update -y && sudo apt install -y --no-install-recommends \
-            bc bison flex libssl-dev libelf-dev dwarves make gcc-aarch64-linux-gnu
-          sudo apt clean
+          cd kernel
+          patch -p1 < ../patch_repo/kernel_4.4.patch # 应用你的BPF补丁
+          echo "✅ BPF补丁合并完成"
 
-      - name: Verify Kconfig & Script Files
-        working-directory: kernel
+      - name: 5. 加载lavender配置并开启BPF项
         run: |
-          ls -l arch/arm64/Kconfig init/Kconfig
-          ls -l scripts/config || echo "scripts/config exists"
+          cd kernel
+          # 加载lavender默认配置
+          make ARCH=arm64 lavender_defconfig
+          # 直接通过scripts/config开启指定BPF配置（替代EOF）
+          scripts/config --enable CONFIG_CGROUP_BPF
+          scripts/config --enable CONFIG_BPF
+          scripts/config --enable CONFIG_BPF_SYSCALL
+          scripts/config --enable CONFIG_BPF_JIT_ALWAYS_ON
+          scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
+          scripts/config --enable CONFIG_NET_CLS_BPF
+          scripts/config --enable CONFIG_BPF_JIT
+          scripts/config --enable CONFIG_HAVE_EBPF_JIT
+          # 保存配置
+          make ARCH=arm64 olddefconfig
+          echo "✅ BPF所有配置项已开启"
 
-      - name: Configure Kernel (zako~kernel + Fix BPF + Slim)
-        working-directory: kernel
+      - name: 6. 修改内核名（zako～kernel）
         run: |
-          export ARCH=arm64
-          # 生成out目录配置
-          make O=out lavender_defconfig
-          # 修改配置：关闭BPF相关功能（解决编译错误）
-          scripts/config --file out/.config --set-str LOCALVERSION "-zako~kernel"
-          scripts/config --file out/.config --disable COMPAT --disable COMPAT_VDSO --disable CONFIG_DTBO_BUILD
-          scripts/config --file out/.config --disable DEBUG_INFO --disable KERNEL_DEBUG --disable TRACEPOINTS
-          # 核心：关闭BPF严格类型检查相关配置，或直接禁用BPF
-          scripts/config --file out/.config --disable BPF --disable BPF_SYSCALL --disable BPF_JIT
-          # 关闭警告转错误（关键：避免指针类型警告被转为错误）
-          scripts/config --file out/.config --unset-val CC_FLAGS_ERROR_ON_WARNING
-          make O=out ARCH=arm64 olddefconfig
+          cd kernel
+          # 改LOCALVERSION（永久生效）
+          scripts/config --set-str LOCALVERSION "-zako～kernel"
+          make ARCH=arm64 olddefconfig
+          # Makefile兜底
+          echo 'LOCALVERSION := -zako～kernel' >> Makefile
+          # 改AnyKernel3显示名（如有）
+          [ -d "AnyKernel3" ] && sed -i 's/^kernel.string=.*/kernel.string=zako～kernel/' AnyKernel3/anykernel.sh
+          echo "✅ 内核名修改为zako～kernel"
 
-      - name: Compile Kernel (LLVM 19.1.0 + Disable BPF Warnings)
-        working-directory: kernel
+      - name: 7. 配置编译器并编译内核
         run: |
-          export LLVM_DIR=${{ github.workspace }}/llvm-19.1.0
-          export CC=$LLVM_DIR/bin/clang
-          export CXX=$LLVM_DIR/bin/clang++
-          export CLANG_TRIPLE=aarch64-linux-gnu-
+          cd kernel
           export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CC=gcc
+          export HOSTCC=gcc
           export ARCH=arm64
-          export PATH=$LLVM_DIR/bin:$PATH
-          # 核心：添加编译参数，屏蔽BPF的指针类型警告
-          export KCFLAGS="-w -Wno-incompatible-pointer-types -Wno-pointer-sign"
-          export KBUILD_CFLAGS="-w $KCFLAGS"
-          export KBUILD_CXXFLAGS="-w"
-          # 编译内核，关闭警告转错误
-          make -j2 O=out ARCH=arm64 Image.gz-dtb NO_DTBO=1 \
-            KCFLAGS="$KCFLAGS" KBUILD_CFLAGS="$KBUILD_CFLAGS" KBUILD_CXXFLAGS="$KBUILD_CXXFLAGS"
-          ls -lh out/arch/arm64/boot/Image.gz-dtb
+          # 编译（禁用警告转错，适配4.4内核）
+          make -j$(nproc) KCFLAGS=-Wno-error KCFLAGS+=-Wno-dangling-pointer
+          echo "✅ 内核编译完成"
 
-      - name: Pack & Upload Kernel
+      - name: 8. 打包可刷内核包
         run: |
-          mkdir -p output
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb output/
-          cd output
-          zip -9 -m lavender-zako-kernel-llvm19.zip Image.gz-dtb
-          ls -lh *.zip
-          uses: actions/upload-artifact@v4
-          with:
-            name: lavender-zako-kernel-llvm19
-            path: output/lavender-zako-kernel-llvm19.zip
-            retention-days: 3
+          cd kernel
+          # 检查镜像和AnyKernel3
+          if [ -f "arch/arm64/boot/Image.gz-dtb" ] && [ -d "AnyKernel3" ]; then
+            cp arch/arm64/boot/Image.gz-dtb AnyKernel3/
+            cd AnyKernel3
+            rm -rf *.zip
+            zip -r9 zako～kernel-BPF-lavender-4.4.zip * -x .git* *.md
+            echo "✅ 内核包打包完成"
+          else
+            echo "⚠️ 跳过打包：缺失Image.gz-dtb或AnyKernel3"
+          fi
+
+      - name: 9. 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: zako～kernel-BPF-lavender-4.4
+          path: kernel/AnyKernel3/zako～kernel-BPF-lavender-4.4.zip
+          if-no-files-found: warn
