@@ -8,11 +8,11 @@ jobs:
   build_kernel:
     runs-on: ubuntu-22.04
     steps:
-      - name: 拉取内核源码
+      - name: 拉取内核源码到根目录
         uses: actions/checkout@v4
         with:
           repository: jsdizkcks/android_kernel_xiaomi_sdm660.git
-          path: kernel
+          path: .  # 下载到工作流根目录，取消子目录嵌套
           submodules: recursive
 
       - name: 安装编译依赖
@@ -22,32 +22,27 @@ jobs:
 
       - name: 配置内核（自定义名称+开启BPF）
         run: |
-          cd kernel
-          # 生成lavender默认配置
+          # 根目录直接执行，无需cd kernel
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- lavender_defconfig
-          # 开启CONFIG_BPF_JIT_ALWAYS_ON
           echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> .config
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
-          # 修改内核名为-zako~kernel
           sed -i 's/^LOCALVERSION=.*/LOCALVERSION=-zako~kernel/' Makefile
 
       - name: 编译内核
         run: |
-          cd kernel
+          # 根目录编译内核
           make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image.gz-dtb
-          # 检查编译产物是否存在
-          ls -l arch/arm64/boot/Image.gz-dtb
+          ls -l arch/arm64/boot/Image.gz-dtb  # 验证产物
 
       - name: 拉取AK3打包工具
         run: |
           git clone https://github.com/ak3rdparty/AnyKernel3.git -b lavender anykernel3
-          # 替换AK3中的内核镜像
-          cp kernel/arch/arm64/boot/Image.gz-dtb anykernel3/Image.gz-dtb
+          # 根目录的产物复制到AK3目录
+          cp arch/arm64/boot/Image.gz-dtb anykernel3/Image.gz-dtb
 
       - name: 打包AK3刷机包
         run: |
           cd anykernel3
-          # 打包为ZIP（命名包含内核名）
           zip -r9 zako-kernel-lavender.zip * -x .git* README.md *.sh
 
       - name: 上传AK3刷机包
