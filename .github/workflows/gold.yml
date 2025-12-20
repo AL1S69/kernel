@@ -13,21 +13,21 @@ jobs:
           rm -rf * .git
           git clone https://github.com/jsdizkcksv/android_kernel_xiaomi_sdm660.git . --recursive
 
-      - name: 安装编译依赖
+      - name: 安装编译依赖（添加32位编译器）
         run: |
           sudo apt update
-          sudo apt install -y gcc-aarch64-linux-gnu make bc bison flex libssl-dev libelf-dev git python3 zip unzip
+          sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf make bc bison flex libssl-dev libelf-dev git python3 zip unzip
 
       - name: 配置内核（自定义名称+开启BPF）
         run: |
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- lavender_defconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- lavender_defconfig
           echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> .config
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- olddefconfig
+          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- olddefconfig
           sed -i 's/^LOCALVERSION=.*/LOCALVERSION=-zako~kernel/' Makefile
 
-      - name: 编译内核
+      - name: 编译内核（指定32位编译器）
         run: |
-          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- Image.gz-dtb
+          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- Image.gz-dtb
           ls -l arch/arm64/boot/Image.gz-dtb
 
       - name: 拉取AK3打包工具
