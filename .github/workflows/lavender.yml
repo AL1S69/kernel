@@ -1,4 +1,4 @@
-name: Lavender SDM660 Kernel Build (zako~kernel + Fix All Errors)
+name: Lavender SDM660 Kernel Build (zako~kernel + LLVM 19.1.0)
 
 on:
   push:
@@ -18,6 +18,7 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      # 缓存内核编译产物，实现增量编译加速
       - name: Cache Kernel Build Artifacts
         uses: actions/cache@v3
         with:
@@ -29,96 +30,109 @@ jobs:
           restore-keys: |
             kernel-build-
 
-      - name: Cache Akitlove Toolchain
-        id: cache_toolchain
+      # 缓存LLVM 19.1.0工具链，避免重复下载
+      - name: Cache LLVM 19.1.0 Toolchain
+        id: cache_llvm
         uses: actions/cache@v3
         with:
-          path: ${{ github.workspace }}/android-kernel-tools
-          key: akitlove-clang-r428724-2025
+          path: llvm-19.1.0
+          key: llvm-19.1.0-linux-x64-2025
 
-      - name: Clone Akitlove Kernel Tools
-        if: steps.cache_toolchain.outputs.cache-hit != 'true'
+      # 下载并解压LLVM 19.1.0官方工具链
+      - name: Download & Extract LLVM 19.1.0
+        if: steps.cache_llvm.outputs.cache-hit != 'true'
         run: |
-          git clone https://github.com/Akitlove/android-kernel-tools.git android-kernel-tools
-          chmod -R +x android-kernel-tools/clang/host/linux-x86/clang-r428724/bin/*
+          wget https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz -O llvm-19.1.0.tar.xz
+          tar -xf llvm-19.1.0.tar.xz
+          mv LLVM-19.1.0-Linux-X64 llvm-19.1.0
+          chmod -R +x llvm-19.1.0/bin/*
 
+      # 安装编译依赖（补充arm64交叉链接器）
       - name: Install Basic Dependencies
         run: |
           sudo apt update -y && sudo apt install -y --no-install-recommends \
-            bc bison flex libssl-dev libelf-dev dwarves git zip unzip wget make
+            bc bison flex libssl-dev libelf-dev dwarves git zip unzip wget make \
+            gcc-aarch64-linux-gnu
           sudo apt clean
 
-      - name: Dynamic Locate Kernel Root
+      # 定义内核和工具链的绝对路径
+      - name: Define Absolute Paths
         run: |
           echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
-          echo "TOOLCHAIN_DIR=$(pwd)/android-kernel-tools" >> $GITHUB_ENV
-          echo "Kernel root: $(pwd), Toolchain root: $(pwd)/android-kernel-tools"
+          echo "LLVM_DIR=$(pwd)/llvm-19.1.0" >> $GITHUB_ENV
+          echo "Kernel Root: ${{ env.KERNEL_DIR }}"
+          echo "LLVM Root: ${{ env.LLVM_DIR }}"
 
-      - name: Configure Kernel (zako~kernel + Fix All Issues)
+      # 配置内核：设置自定义名+关闭不兼容特性
+      - name: Configure Kernel (zako~kernel + Compatibility Fix)
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
           export ARCH=arm64
           # 加载默认配置
           make lavender_defconfig
-          # 显示基础版本+设置自定义内核名
-          echo "===== 基础内核版本 ====="
-          make kernelversion
+          # 核心：设置自定义内核名 -zako~kernel
           scripts/config --set-str LOCALVERSION "-zako~kernel"
-          # 核心修复1：关闭ARM32兼容，消除CROSS_COMPILE_ARM32依赖
+          # 关闭ARM32兼容，消除CROSS_COMPILE_ARM32依赖
           scripts/config --disable COMPAT
           scripts/config --disable COMPAT_VDSO
-          # 核心修复2：关闭链接器不支持的Cortex-A53 erratum修复
+          # 关闭链接器不支持的Cortex-A53 erratum修复
           scripts/config --disable LDFLAGS_FIX_CORTEX_A53_843419
-          # 修复编译器特性+关闭DTBO
+          # 关闭DTBO构建，避免依赖错误
+          scripts/config --disable CONFIG_DTBO_BUILD
+          # 修复编译器栈保护特性
           scripts/config --disable CC_STACKPROTECTOR_STRONG
           scripts/config --enable CC_STACKPROTECTOR_BASIC
-          scripts/config --disable CONFIG_DTBO_BUILD
-          # 补全BPF配置
+          # 补全Android 16所需BPF配置
           scripts/config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT
+          # 应用配置修改
           make ARCH=arm64 olddefconfig
-          # 验证配置
-          echo "===== 最终配置验证 ====="
+          # 验证配置结果
+          echo "===== 内核配置验证 ====="
           grep -E "LOCALVERSION|COMPAT|LDFLAGS_FIX_CORTEX_A53_843419" .config
 
-      - name: Compile Kernel (Fix Clang Path + Speed Up)
+      # 编译内核：使用LLVM 19.1.0+并行编译加速
+      - name: Compile Kernel (LLVM 19.1.0 + Speed Up)
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
-          # 核心修复3：使用绝对路径指定Clang，避免相对路径错误
-          export CLANG_PATH=${{ env.TOOLCHAIN_DIR }}/clang/host/linux-x86/clang-r428724
-          export CC=$CLANG_PATH/bin/clang
-          export CXX=$CLANG_PATH/bin/clang++
+          # 配置LLVM 19.1.0编译参数
+          export CC=${{ env.LLVM_DIR }}/bin/clang
+          export CXX=${{ env.LLVM_DIR }}/bin/clang++
           export CLANG_TRIPLE=aarch64-linux-gnu-
+          export CROSS_COMPILE=aarch64-linux-gnu-
           export ARCH=arm64
-          export PATH=$CLANG_PATH/bin:$PATH
-          # 启用编译缓存加速
+          export PATH=${{ env.LLVM_DIR }}/bin:$PATH
+          # 启用ccache编译缓存，减少重复编译时间
           export CCACHE_DIR=${{ github.workspace }}/.ccache
           export CCACHE_COMPRESS=1
-          # 编译内核（仅ARM64，跳过DTBO）
+          # 最大化并行编译（CPU核心数+2）
           make -j$((`nproc` + 2)) ARCH=arm64 Image.gz-dtb NO_DTBO=1 DTBO_IMG= \
-            CC=$CC CXX=$CXX CLANG_TRIPLE=$CLANG_TRIPLE CCACHE=1
-          # 验证产物
+            CC=$CC CXX=$CXX CLANG_TRIPLE=$CLANG_TRIPLE CROSS_COMPILE=$CROSS_COMPILE CCACHE=1
+          # 验证编译产物
+          echo "===== 编译产物验证 ====="
           ls -l arch/arm64/boot/Image.gz-dtb
           file arch/arm64/boot/Image.gz-dtb
 
+      # 克隆AnyKernel3，适配红米Note7设备
       - name: Clone AnyKernel3 for Lavender
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
+          # 适配设备信息+嵌入内核名
           sed -i "s/device.name1=/device.name1=lavender/" anykernel.sh
           sed -i "s/device.name2=/device.name2=Redmi Note 7/" anykernel.sh
-          sed -i "s/kernel.string=/kernel.string=zako~kernel for Lavender/" anykernel.sh
+          sed -i "s/kernel.string=/kernel.string=zako~kernel (LLVM 19.1.0) for Lavender/" anykernel.sh
 
+      # 打包可刷入的内核ZIP包，文件名包含内核名和时间
       - name: Pack Flashable Zip (zako~kernel)
         run: |
           cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
-          zip -r9 "Lavender-zako~kernel-$(date +%Y%m%d-%H%M).zip" * -x .git* README.md *.sh
+          zip -r9 "Lavender-zako~kernel-LLVM19-$(date +%Y%m%d-%H%M).zip" * -x .git* README.md *.sh
+          # 显示打包结果
           ls -l *.zip
 
+      # 上传编译好的内核包到GitHub Artifacts
       - name: Upload Compiled Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Lavender-zako~kernel-Build
-          path: anykernel/Lavender-zako~kernel*.zip
-          retention-days: 7
-
+          name: Lavender
