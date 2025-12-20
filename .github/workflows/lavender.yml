@@ -1,80 +1,73 @@
-name: Lavender SDM660 Build (zako~kernel + LLVM 19.1.0 + Space Fix)
+name: Lavender SDM660 Build (zako~kernel + LLVM 19.1.0 + Fix Dir)
 
 on:
-  workflow_dispatch: # 仅手动触发，避免重复消耗空间
+  workflow_dispatch:
 
 jobs:
   build_kernel:
     runs-on: ubuntu-22.04
     steps:
-      # 1. 深度清理空间（释放12G+核心空间）
       - name: Deep Clean Runner Space
         run: |
-          # 删除系统大文件
           sudo apt remove -y --purge firefox snapd google-chrome-stable libreoffice*
           sudo apt autoremove -y && sudo apt clean
-          # 删除无用开发环境
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /var/lib/docker /var/cache/apt/archives/*
-          # 删除GitHub Actions缓存垃圾
           sudo rm -rf /home/runner/actions-runner/_work/_temp/* /home/runner/actions-runner/_work/_cache/*
-          # 查看剩余空间（关键：确保剩余≥8G）
-          df -h / && du -sh /home/runner/
+          df -h /
 
-      # 2. 克隆内核源码（极致轻量化）
       - name: Checkout Kernel Source (Light)
         uses: actions/checkout@v4
         with:
           repository: jsdizkcksv/android_kernel_xiaomi_sdm660
           path: kernel
           submodules: false
-          fetch-depth: 1 # 仅克隆最新1次提交
-          sparse-checkout: | # 仅检出编译必需目录
+          fetch-depth: 1
+          sparse-checkout: |
             arch/arm64
             include
             scripts
             Makefile
             .config
 
-      # 3. 下载LLVM 19.1.0（使用压缩流直解，避免临时文件）
-      - name: Download & Extract LLVM 19.1.0 (Stream)
+      # 核心修复：提前创建LLVM目标目录
+      - name: Create LLVM Directory First
         run: |
-          # 直接流式解压，不生成临时压缩包
-          wget -q -O - https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz | tar -xJ -C /tmp/ --strip-components=1
-          # 移动到工作目录并赋予权限
-          mv /tmp/bin /tmp/lib /tmp/include ${{ github.workspace }}/llvm-19.1.0/
+          mkdir -p ${{ github.workspace }}/llvm-19.1.0
+          ls -ld ${{ github.workspace }}/llvm-19.1.0/
+
+      # 修复流式解压指令，确保文件移动正确
+      - name: Download & Extract LLVM 19.1.0 (Stream + Fix)
+        run: |
+          # 流式解压到临时目录
+          wget -q -O - https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz | tar -xJ -C /tmp/
+          # 移动解压后的文件到提前创建的目录
+          mv /tmp/LLVM-19.1.0-Linux-X64/* ${{ github.workspace }}/llvm-19.1.0/
+          # 赋予执行权限
           chmod -R +x ${{ github.workspace }}/llvm-19.1.0/bin/
-          # 删除解压临时文件
-          rm -rf /tmp/*
-          # 查看LLVM体积（约1.8G，仅保留编译必需文件）
+          # 删除临时文件
+          rm -rf /tmp/LLVM-19.1.0-Linux-X64
           du -sh ${{ github.workspace }}/llvm-19.1.0/
 
-      # 4. 安装最小依赖（仅保留编译必需）
       - name: Install Minimal Dependencies
         run: |
           sudo apt update -y && sudo apt install -y --no-install-recommends \
             bc bison flex libssl-dev libelf-dev dwarves make gcc-aarch64-linux-gnu
           sudo apt clean
 
-      # 5. 配置内核（关闭非必需功能，减少编译量）
       - name: Configure Kernel (zako~kernel + Slim)
         working-directory: kernel
         run: |
           export ARCH=arm64
           make lavender_defconfig
-          # 设置自定义内核名
           scripts/config --set-str LOCALVERSION "-zako~kernel"
-          # 关闭高空间占用功能
           scripts/config --disable COMPAT --disable COMPAT_VDSO --disable CONFIG_DTBO_BUILD
           scripts/config --disable DEBUG_INFO --disable KERNEL_DEBUG --disable TRACEPOINTS
-          # 开启BPF核心功能
           scripts/config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT
           make ARCH=arm64 olddefconfig
 
-      # 6. 编译内核（低IO+轻量化编译）
       - name: Compile Kernel (LLVM 19.1.0 + Slim Build)
         working-directory: kernel
         run: |
-          # 配置LLVM 19.1.0路径
           export LLVM_DIR=${{ github.workspace }}/llvm-19.1.0
           export CC=$LLVM_DIR/bin/clang
           export CXX=$LLVM_DIR/bin/clang++
@@ -82,27 +75,20 @@ jobs:
           export CROSS_COMPILE=aarch64-linux-gnu-
           export ARCH=arm64
           export PATH=$LLVM_DIR/bin:$PATH
-          # 轻量化编译参数（无调试信息+高优化）
           export KBUILD_CFLAGS="-O2 -g0 -ffunction-sections -fdata-sections"
-          export KBUILD_LDFLAGS="--gc-sections" # 移除未使用代码段
-          # 2核编译（平衡速度与IO）
+          export KBUILD_LDFLAGS="--gc-sections"
           make -j2 ARCH=arm64 Image.gz-dtb NO_DTBO=1
-          # 验证产物并查看体积
           ls -lh arch/arm64/boot/Image.gz-dtb
-          du -sh arch/arm64/boot/
 
-      # 7. 高压缩打包并上传
       - name: Pack & Upload Kernel
         run: |
           mkdir -p output
           cp kernel/arch/arm64/boot/Image.gz-dtb output/
           cd output
-          zip -9 -m lavender-zako-kernel-llvm19.zip Image.gz-dtb # 高压缩+删除源文件释放空间
+          zip -9 -m lavender-zako-kernel-llvm19.zip Image.gz-dtb
           ls -lh *.zip
-          # 上传产物（仅保留3天）
           uses: actions/upload-artifact@v4
           with:
             name: lavender-zako-kernel-llvm19
             path: output/lavender-zako-kernel-llvm19.zip
             retention-days: 3
-
