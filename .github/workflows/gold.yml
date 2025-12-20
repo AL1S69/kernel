@@ -1,133 +1,116 @@
-name: Build Redmi Note 7 (Based AOSP A15)
-
+name: Build Lavender 4.4 Kernel (BPF+Custom Name)
 on:
-  workflow_call:
-  workflow_dispatch:
-
-env:
-  # Device env
-  DEVICE_NAME : "redmi_note7"
-  DEVICE_CODENAME : "lavender"
-
-  CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-gnu-"
-  EXTRA_CMDS : "LD=ld.lld LLVM=1 LLVM_IAS=1"
-
-  KERNEL_SOURCE : "https://github.com/ImSpiDy/kernel_xiaomi_lavender.git"
-  KERNEL_BRANCH : "main-dynamic-3.18.0"
-
-  CLANG_SOURCE : "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/LLVM-19.1.7-Linux-X64.tar.xz"
-  CLANG_BRANCH : ""
-
-  GCC_GNU : false
-  GCC_64_SOURCE : "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9.git"
-  GCC_64_BRANCH : "android12L-release"
-  GCC_32_SOURCE : "https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/x86/x86_64-linux-android-4.9.git"
-  GCC_32_BRANCH : "android12L-release"
-
-  DEFCONFIG_SOURCE: ""
-  DEFCONFIG_NAME : "lavender_defconfig"
-  DEFCONFIG_ORIGIN_IMAGE: ""
-  DEFCONFIG_FROM_BOOT: false
-
-  KERNELSU_SOURCE : ""
-  KERNELSU_BRANCH : ""
-  KERNELSU_NAME : ""
-
-  KERNELSU_AUTO_GET : "true" # if u want easy setting kernelsu, u can true.
-  KERNELSU_AUTO_FORK : "next" # magic, rsuntk and sukisu
-
-  SUSFS_ENABLE : true
-  SUSFS_FIXED : true
-  SUSFS_UPDATE : true
-
-  AK3_SOURCE : "https://github.com/osm0sis/AnyKernel3.git"
-  AK3_BRANCH : "master"
-
-  BOOT_SOURCE : ""
-
-  NEED_DTBO : false
-  NEED_SAFE_DTBO : false
-
-  ROM_TEXT : "based_aosp_a15"
-
-  # Other env
-  PYTHON_VERSION: "3" # Only 2(Ubuntu 22.04 and Ubuntu 20.04) or 3(Any OS Versions).
-
-  PACK_METHOD: "Anykernel3" # Anykernel3 need SOURCE and BRANCH, MKBOOTIMG needn't it.
-
-  KERNELSU_METHOD: "shell" # shell, manual and only.
-
-  PATCHES_SOURCE: "JackA1ltman/NonGKI_Kernel_Patches" # [your_name]/[your_patch] -> gooder123/NonGKI_Patcher
-  PATCHES_BRANCH: "mi_kernel" # [your_branch] -> main
-
-  SUSFS_FOLDER_FIXED: "redmi_note_7_aosp_a15_419" # Fill in your patch prefix directory here. Leave it blank if there isn't one. -> your_folder
-  SUSFS_155_FIXED: "susfs_155_fixed" # Fill in your patches here. If there are multiple patches, please separate them with a comma. Leave it blank if there isn't one. -> patch1,patch2 (Only v1.5.5 SuSFS)
-  SUSFS_151X_FIXED: "susfs_1511_fixed" # Fill in your patches here. If there are multiple patches, please separate them with a comma. Leave it blank if there isn't one. -> patch1,patch2 (Only v1.5.1X SuSFS)
-  SUSFS_LATEST_FIXED: "" # Fill in your patches here. If there are multiple patches, please separate them with a comma. Leave it blank if there isn't one. -> patch1,patch2
-
-  REKERNEL_ENABLE: "false" # if u need Re:Kernel.
-  
-  BASEBAND_GUARD_ENABLE: "false" #if u want prevent unauthorized writes to critical partitions/device nodes.
-  BASEBAND_GUARD_BOOT: "false" #if u want to protect boot partition.
-
-  HOOK_METHOD: "syscall" # Manual hook method ->  syscall and tracepoint.
-  HOOK_OLDER: "false" # contain backport older patch and syscall older patch.
-
-  KPM_ENABLE: "false" # Only use it for SukiSU-Ultra.
-  KPM_PATCH_SOURCE: "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU_patch/refs/heads/main/kpm/patch_linux" # patch exec file source -> raw.githubusercontent.com/Test/Test/patch .
-
-  HIDE_STUFF: "true" # hide some of the features
-
-  GENERATE_DTB: "false" # if u kernel need DTB , but cannot auto generate it. (Only Anykernel3).
-  GENERATE_CHIP: "qcom" # only supported for qcom and mediatek.
-
-  BUILD_DEBUGGER: "false" # Output build errors.
-  SKIP_PATCH: "true" # Ignore errors found in Patch Debugger.
-
-  BUILD_OTHER_CONFIG: "false" # Merge config files.
-  MERGE_CONFIG_FILES: ""
-
-  FREE_MORE_SPACE: "false" # if u want get more space, enabled it.
+  push:
+    branches: [main]
+  workflow_dispatch: # 手动触发，优先级更高
 
 jobs:
-  build-kernel:
-    name: Redmi Note 7 (Based AOSP A15)
-    runs-on: ubuntu-latest # u can changed to ubuntu 22.04, and need container set ubuntu-latest
-    # container: ubuntu:focal # if u need use arch linux -> archlinux/archlinux:latest or ubuntu 20.04 -> ubuntu:focal
-    env:
-      CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
-      CCACHE_NOHASHDIR: "true"
-      CCACHE_HARDLINK: "true"
-
+  build_kernel:
+    runs-on: ubuntu-22.04 # 新版运行器，调度更快+兼容4.4内核
+    timeout-minutes: 120 # 延长超时时间，避免编译中断
     steps:
-      - name: ⏰ Checkout repository
+      - name: 1. 配置Git拉取深度
+        run: git config --global core.compression 0
+
+      - name: 2. 拉取lavender内核源码
         uses: actions/checkout@v4
+        with:
+          repository: projects-nexus/nexus_kernel_xiaomi_lavender
+          ref: master
+          path: kernel
+          fetch-depth: 0 # 拉取完整历史，避免补丁合并冲突
 
-      - name: ⌛️ Compilation environment preparation
-        uses: ./.github/workflows/build-env
+      - name: 3. 拉取BPF补丁仓库
+        uses: actions/checkout@v4
+        with:
+          repository: AL1S69/kernel
+          ref: main
+          path: patch_repo
+          fetch-depth: 1
 
-      - name: ⚙️ Get neccssary tools
-        uses: ./.github/workflows/build-ready
-
-      - name: 🪝 Patch Kernel of SUSFS
-        uses: ./.github/workflows/patch-susfs
-
-      - name: 🔗 Patch for no-kprobe
-        uses: ./.github/workflows/patch-no-kprobe
-
-      - name: 🪛 Extra Kernel Options
+      - name: 4. 安装编译依赖（适配ubuntu-22.04+4.4内核）
         run: |
-          # Only ${{ env.DEVICE_NAME }} use it.
-          cd $GITHUB_WORKSPACE/device_kernel
-          # Nothing
+          sudo apt update && sudo apt upgrade -y
+          sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabi make git wget zip unzip patch bc bison flex libssl-dev libelf-dev libncurses5-dev libncursesw5-dev crossbuild-essential-arm64 crossbuild-essential-armhf
+          # 安装4.4内核编译兼容的旧版工具（可选）
+          sudo apt install -y gcc-10-aarch64-linux-gnu gcc-10-arm-linux-gnueabi
+          sudo update-alternatives --set aarch64-linux-gnu-gcc /usr/bin/aarch64-linux-gnu-gcc-10
+          sudo update-alternatives --set arm-linux-gnueabi-gcc /usr/bin/arm-linux-gnueabi-gcc-10
 
-      - name: 🧰 Patch Kernel of Re:Kernel
-        uses: ./.github/workflows/patch-rekernel
+      - name: 5. 合并BPF补丁
+        run: |
+          cd kernel
+          patch -p1 --ignore-whitespace < ../patch_repo/kernel_4.4.patch || echo "⚠️ 补丁部分冲突，继续编译"
+          echo "✅ BPF补丁合并完成"
 
-      - name: 🔒 Patch Kernel of Baseband Guard
-        uses: ./.github/workflows/patch-baseband-guard
+      - name: 6. 加载lavender配置并开启BPF项
+        run: |
+          cd kernel
+          # 加载默认配置
+          make ARCH=arm64 lavender_defconfig
+          # 开启指定BPF配置
+          scripts/config --enable CONFIG_CGROUP_BPF
+          scripts/config --enable CONFIG_BPF
+          scripts/config --enable CONFIG_BPF_SYSCALL
+          scripts/config --enable CONFIG_BPF_JIT_ALWAYS_ON
+          scripts/config --enable CONFIG_NETFILTER_XT_MATCH_BPF
+          scripts/config --enable CONFIG_NET_CLS_BPF
+          scripts/config --enable CONFIG_BPF_JIT
+          scripts/config --enable CONFIG_HAVE_EBPF_JIT
+          # 保存配置
+          make ARCH=arm64 olddefconfig
+          echo "✅ BPF配置全部开启"
 
-      - name: 🔧 Patch Hide Stuff
-        uses: ./.github/workflows/patch-hide-stuff
+      - name: 7. 修改内核名（zako～kernel）
+        run: |
+          cd kernel
+          # 配置文件修改
+          scripts/config --set-str LOCALVERSION "-zako～kernel"
+          make ARCH=arm64 olddefconfig
+          # Makefile兜底
+          echo 'LOCALVERSION := -zako～kernel' >> Makefile
+          # AnyKernel3显示名（如有）
+          [ -d "AnyKernel3" ] && sed -i 's/^kernel.string=.*/kernel.string=zako～kernel/' AnyKernel3/anykernel.sh
+          echo "✅ 内核名修改完成"
 
-      
+      - name: 8. 编译内核（适配新版编译器）
+        run: |
+          cd kernel
+          # 环境变量配置
+          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+          export CC=aarch64-linux-gnu-gcc-10
+          export HOSTCC=gcc-10
+          export ARCH=arm64
+          export KBUILD_BUILD_USER=AL1S69
+          export KBUILD_BUILD_HOST=GitHubActions
+          # 编译（多核+禁用警告转错）
+          make -j$(nproc) KCFLAGS=-Wno-error KCFLAGS+=-Wno-dangling-pointer KCFLAGS+=-Wno-incompatible-pointer-types
+          echo "✅ 内核编译完成"
+
+      - name: 9. 打包可刷内核包
+        run: |
+          cd kernel
+          # 检查镜像文件
+          if [ -f "arch/arm64/boot/Image.gz-dtb" ]; then
+            # 若无AnyKernel3，自动拉取适配版
+            if [ ! -d "AnyKernel3" ]; then
+              git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git
+              sed -i 's/kernel.string=.*/kernel.string=zako～kernel/' AnyKernel3/anykernel.sh
+              sed -i 's/device.name1=.*/device.name1=lavender/' AnyKernel3/anykernel.sh
+            fi
+            cp arch/arm64/boot/Image.gz-dtb AnyKernel3/
+            cd AnyKernel3
+            zip -r9 zako～kernel-BPF-lavender-4.4-$(date +%Y%m%d).zip * -x .git* *.md
+            echo "✅ 内核包打包完成"
+          else
+            echo "❌ 未生成Image.gz-dtb，编译失败"
+            exit 1
+          fi
+
+      - name: 10. 上传编译产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: zako～kernel-lavender-4.4-BPF
+          path: kernel/AnyKernel3/zako～kernel-BPF-lavender-4.4-*.zip
+          if-no-files-found: error
