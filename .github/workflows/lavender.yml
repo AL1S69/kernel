@@ -6,14 +6,12 @@ jobs:
   build_and_pack:
     runs-on: ubuntu-22.04
     steps:
-      - name: 1. Install Dependencies (修复权限)
+      - name: 1. Install Dependencies
         run: |
-          # 跳过apt clean（避免权限错误），仅更新并安装依赖
           sudo apt update -y
           sudo apt install -y --no-install-recommends \
           git make bison flex gcc-aarch64-linux-gnu bc libssl1.1 libelf-dev \
           python3 curl liblz4-tool zstd xz-utils libncurses5-dev patch zip
-          # 移除rm /var/lib/apt/lists的操作，避免权限拒绝
 
       - name: 2. Clone Kernel Source
         run: |
@@ -32,58 +30,47 @@ jobs:
       - name: 4. Download & Extract LLVM 19.1.0
         if: steps.cache-llvm.outputs.cache-hit != 'true'
         run: |
-          cd ${{ env.KERNEL_DIR }}
+          cd $KERNEL_DIR
           wget -q https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz -O llvm.tar.xz
           mkdir -p llvm-19.1.0 && tar -xf llvm.tar.xz -C llvm-19.1.0 --strip-components=1
-          rm -f llvm.tar.xz # 仅删除下载的压缩包，无权限问题
+          rm -f llvm.tar.xz
           echo "LLVM_DIR=$(pwd)/llvm-19.1.0" >> $GITHUB_ENV
           echo "CLANG_DIR=$(pwd)/llvm-19.1.0/bin" >> $GITHUB_ENV
 
-      - name: 5. Integrate SukiSU-Ultra
+      - name: 5. Configure Kernel (BPF Only)
         run: |
-          cd ${{ env.KERNEL_DIR }}
-          curl -LSs https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh | bash -s main
-          [ -d KernelSU ] || exit 1
-          echo 'EXTRA_CFLAGS += -std=c99 -Wno-gcc-compat -Wno-incompatible-pointer-types' >> drivers/kernelsu/kpm/Makefile
-          echo 'EXTRA_CFLAGS += -Wno-implicit-function-declaration -Wno-typedef-redefinition' >> drivers/kernelsu/Makefile
-
-      - name: 6. Configure Kernel (Step-by-Step)
-        run: |
-          cd ${{ env.KERNEL_DIR }}
+          cd $KERNEL_DIR
           make O=out ARCH=arm64 lavender_defconfig
+          # 仅追加BPF必需配置，移除SUKISU相关
           echo "CONFIG_BPF=y" >> out/.config
           echo "CONFIG_BPF_SYSCALL=y" >> out/.config
           echo "CONFIG_BPF_JIT=y" >> out/.config
           echo "CONFIG_NET_CLS_BPF=y" >> out/.config
           echo "CONFIG_NET_ACT_BPF=y" >> out/.config
-          echo "CONFIG_KALLSYMS=y" >> out/.config
-          echo "CONFIG_KALLSYMS_ALL=y" >> out/.config
-          echo "CONFIG_KPROBES=y" >> out/.config
-          echo "CONFIG_HAVE_KPROBES=y" >> out/.config
+          echo "CONFIG_BPF_EVENTS=y" >> out/.config
           echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
-          echo "CONFIG_KSU=y" >> out/.config
-          echo "CONFIG_KPM=y" >> out/.config
+          # 4.4内核基础兼容配置
           echo "CONFIG_MODULES=y" >> out/.config
           echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
           echo "CONFIG_DEBUG_INFO_BTF=n" >> out/.config
           echo "CONFIG_CC_STD_C99=n" >> out/.config
           echo "CONFIG_LTO=n" >> out/.config
           yes "" | make O=out ARCH=arm64 olddefconfig
-          grep -E "CONFIG_BPF=y|CONFIG_KSU=y" out/.config || { echo "Config Failed" && exit 1; }
+          grep -E "CONFIG_BPF=y" out/.config || { echo "BPF Config Failed" && exit 1; }
 
-      - name: 7. Compile Kernel
+      - name: 6. Compile Kernel
         run: |
-          cd ${{ env.KERNEL_DIR }}
+          cd $KERNEL_DIR
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
-          export CC=${{ env.CLANG_DIR }}/clang
+          export CC=$CLANG_DIR/clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          export LD=${{ env.CLANG_DIR }}/ld.lld
-          export AR=${{ env.CLANG_DIR }}/llvm-ar
-          export NM=${{ env.CLANG_DIR }}/llvm-nm
-          export OBJCOPY=${{ env.CLANG_DIR }}/llvm-objcopy
-          export OBJDUMP=${{ env.CLANG_DIR }}/llvm-objdump
+          export LD=$CLANG_DIR/ld.lld
+          export AR=$CLANG_DIR/llvm-ar
+          export NM=$CLANG_DIR/llvm-nm
+          export OBJCOPY=$CLANG_DIR/llvm-objcopy
+          export OBJDUMP=$CLANG_DIR/llvm-objdump
           
           export KBUILD_LTO=none
           export KBUILD_CFLAGS="-Wno-error=unused-command-line-argument -Wno-error=deprecated-declarations"
@@ -91,7 +78,7 @@ jobs:
           export MAKEFLAGS="-j$(nproc)"
           make -j$(nproc) O=out ARCH=arm64 Image dtbo.img dtbs $KBUILD_FLAGS > build.log 2>&1 || { cat build.log && exit 1; }
 
-      - name: 8. Clone AnyKernel3 (A-only)
+      - name: 7. Clone AnyKernel3 (A-only)
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel3
           cd anykernel3
@@ -101,8 +88,23 @@ jobs:
           sed -i 's/skip_dtbo=0/skip_dtbo=1/' anykernel.sh
           echo "ANYKERNEL_DIR=$(pwd)" >> $GITHUB_ENV
 
-      - name: 9. Copy Build Products
+      - name: 8. Copy Build Products
         run: |
-          cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/Image ${{ env.ANYKERNEL_DIR }}/zImage
-          cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/dtbo.img ${{ env.ANYKERNEL_DIR }}/dtbo.img
-          cp ${{ env.KERNEL_DIR }}/out/arch/arm64/boot/dts/qcom/sdm660-lavender.dtb ${{ env.ANYKERNEL_
+          cp $KERNEL_DIR/out/arch/arm64/boot/Image $ANYKERNEL_DIR/zImage
+          cp $KERNEL_DIR/out/arch/arm64/boot/dtbo.img $ANYKERNEL_DIR/dtbo.img
+          cp $KERNEL_DIR/out/arch/arm64/boot/dts/qcom/sdm660-lavender.dtb $ANYKERNEL_DIR/dtb
+
+      - name: 9. Pack Flashable Zip
+        run: |
+          cd $ANYKERNEL_DIR
+          zip -r9 Lavender-4.4-Kernel-LLVM19-Aonly.zip * -x .git* README.md *.sh
+          mkdir -p $KERNEL_DIR/final-output
+          cp Lavender-4.4-Kernel-LLVM19-Aonly.zip $KERNEL_DIR/final-output/
+
+      - name: 10. Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Lavender-Aonly-Kernel-Package
+          path: $KERNEL_DIR/final-output/*.zip
+          retention-days: 14
+
