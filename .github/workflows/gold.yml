@@ -1,17 +1,17 @@
-name: Build Lavender-zako-kernel (AK3)
+name: Build Lavender-zako-kernel (AK3-U20.04)
 on:
-  workflow_dispatch:
+  workflow_dispatch: # 仅手动触发，避免自动编译消耗资源
 
 jobs:
   build:
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-20.04 # 更换为20.04，gcc-9默认，兼容4.4内核
     steps:
       - name: 清空根目录+拉取内核源码
         run: |
           rm -rf * .git
           git clone https://github.com/jsdizkcksv/android_kernel_xiaomi_sdm660.git . --recursive --depth=1
 
-      - name: 安装完整编译依赖
+      - name: 安装Ubuntu20.04完整编译依赖（gcc-9原生）
         run: |
           sudo apt update -y
           sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf \
@@ -19,12 +19,12 @@ jobs:
           libncurses5-dev libncursesw5-dev pkg-config libc6-dev-i386 \
           crossbuild-essential-armhf crossbuild-essential-arm64
 
-      - name: 内核配置（echo逐条追加BPF依赖+内核名-zako~kernel）
+      - name: 内核配置（echo逐条追加BPF依赖+自定义内核名）
         run: |
           # 基础配置
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- lavender_defconfig
           
-          # ✨更改追加方式：echo逐条追加BPF全依赖（无遗漏）
+          # BPF全依赖配置
           echo "CONFIG_BPF=y" >> .config
           echo "CONFIG_BPF_SYSCALL=y" >> .config
           echo "CONFIG_BPF_JIT=y" >> .config
@@ -39,18 +39,18 @@ jobs:
           
           # 处理配置依赖
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- olddefconfig
-          # 内核名-zako~kernel
+          # 修改内核名-zako~kernel
           sed -i 's/^LOCALVERSION=.*/LOCALVERSION=-zako~kernel/' Makefile
 
-      - name: 编译内核（兜底不报错）
+      - name: 编译内核（低并发+兜底，避免资源超限）
         run: |
-          make -j$(nproc) ARCH=arm64 \
+          make -j2 V=1 ARCH=arm64 \
           CROSS_COMPILE=aarch64-linux-gnu- \
           CROSS_COMPILE_ARM32=arm-linux-gnueabihf- \
           KCFLAGS=-Wno-error \
           Image.gz-dtb
 
-      - name: 拉取AK3打包
+      - name: 拉取AK3打包工具
         run: |
           git clone https://github.com/ak3rdparty/AnyKernel3.git -b lavender anykernel3 --depth=1
           cp arch/arm64/boot/Image.gz-dtb anykernel3/
@@ -60,9 +60,10 @@ jobs:
           cd anykernel3
           zip -r9 zako-kernel-lavender-$(date +%Y%m%d).zip * -x .git* README.md *.sh .gitignore
 
-      - name: 上传产物
+      - name: 上传产物（保留7天）
         uses: actions/upload-artifact@v4
         with:
-          name: zako-kernel-lavender-AK3
+          name: zako-kernel-lavender-AK3-U20.04
           path: anykernel3/*.zip
           retention-days: 7
+
