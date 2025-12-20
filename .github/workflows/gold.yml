@@ -8,12 +8,10 @@ jobs:
   build_kernel:
     runs-on: ubuntu-22.04
     steps:
-      - name: 拉取内核源码到根目录（修正仓库地址）
-        uses: actions/checkout@v4
-        with:
-          repository: jsdizkcksv/android_kernel_xiaomi_sdm660.git # 修正后的正确仓库地址
-          path: . # 下载到工作流根目录
-          submodules: recursive
+      - name: 拉取内核源码到根目录（git clone方式）
+        run: |
+          rm -rf * .git
+          git clone https://github.com/jsdizkcksv/android_kernel_xiaomi_sdm660.git . --recursive
 
       - name: 安装编译依赖
         run: |
