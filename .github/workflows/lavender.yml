@@ -6,11 +6,11 @@ jobs:
   build_and_pack:
     runs-on: ubuntu-22.04
     steps:
-      - name: 1. Install Dependencies
+      - name: 1. Install Dependencies (含ARM32编译器)
         run: |
           sudo apt update -y
           sudo apt install -y --no-install-recommends \
-          git make bison flex gcc-aarch64-linux-gnu bc libssl1.1 libelf-dev \
+          git make bison flex gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf bc libssl1.1 libelf-dev \
           python3 curl liblz4-tool zstd xz-utils libncurses5-dev patch zip
 
       - name: 2. Clone Kernel Source
@@ -37,11 +37,11 @@ jobs:
           echo "LLVM_DIR=$(pwd)/llvm-19.1.0" >> $GITHUB_ENV
           echo "CLANG_DIR=$(pwd)/llvm-19.1.0/bin" >> $GITHUB_ENV
 
-      - name: 5. Configure Kernel (BPF Only)
+      - name: 5. Configure Kernel (BPF Only + 禁用32位vDSO)
         run: |
           cd $KERNEL_DIR
           make O=out ARCH=arm64 lavender_defconfig
-          # 仅追加BPF必需配置，移除SUKISU相关
+          # BPF核心配置
           echo "CONFIG_BPF=y" >> out/.config
           echo "CONFIG_BPF_SYSCALL=y" >> out/.config
           echo "CONFIG_BPF_JIT=y" >> out/.config
@@ -49,21 +49,25 @@ jobs:
           echo "CONFIG_NET_ACT_BPF=y" >> out/.config
           echo "CONFIG_BPF_EVENTS=y" >> out/.config
           echo "CONFIG_KPROBE_EVENTS=y" >> out/.config
-          # 4.4内核基础兼容配置
+          # 4.4内核兼容配置
           echo "CONFIG_MODULES=y" >> out/.config
           echo "CONFIG_MODULE_UNLOAD=y" >> out/.config
           echo "CONFIG_DEBUG_INFO_BTF=n" >> out/.config
           echo "CONFIG_CC_STD_C99=n" >> out/.config
           echo "CONFIG_LTO=n" >> out/.config
+          # 关键：禁用32位vDSO，避免CROSS_COMPILE_ARM32依赖
+          echo "CONFIG_COMPAT_VDSO=n" >> out/.config
           yes "" | make O=out ARCH=arm64 olddefconfig
           grep -E "CONFIG_BPF=y" out/.config || { echo "BPF Config Failed" && exit 1; }
 
-      - name: 6. Compile Kernel
+      - name: 6. Compile Kernel (定义CROSS_COMPILE_ARM32)
         run: |
           cd $KERNEL_DIR
           export ARCH=arm64
           export SUBARCH=arm64
           export CROSS_COMPILE=aarch64-linux-gnu-
+          # 定义ARM32交叉编译器路径（备用，已禁用32位vDSO）
+          export CROSS_COMPILE_ARM32=arm-linux-gnueabihf-
           export CC=$CLANG_DIR/clang
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export LD=$CLANG_DIR/ld.lld
