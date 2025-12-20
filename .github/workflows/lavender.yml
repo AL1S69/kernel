@@ -1,4 +1,4 @@
-name: Build & Pack Lavender Kernel (Akitlove Clang r428724)
+name: Build & Pack Lavender Kernel (Fix Workdir)
 
 on:
   push:
@@ -30,30 +30,32 @@ jobs:
         run: |
           cd kernel
           git clone https://github.com/Akitlove/android-kernel-tools.git android-kernel-tools
-          # 仅赋予Clang可执行权限（仓库无GCC bin目录）
           chmod -R +x android-kernel-tools/clang/host/linux-x86/clang-r428724/bin/*
 
+      - name: Check Source Directory Structure
+        run: |
+          # 打印当前工作目录和源码目录结构，便于排查
+          pwd
+          ls -R /home/runner/work/kernel/
+          # 确认lavender-44的真实路径
+          find /home/runner/work/kernel/ -name "lavender-44"
+
       - name: Configure Kernel (Fix Path + BPF + Compatibility)
-        working-directory: kernel/lavender-44 # 修正工作目录（若实际是lavender则改为kernel/lavender）
+        working-directory: /home/runner/work/kernel/kernel/lavender-44 # 使用绝对路径，避免嵌套错误
         run: |
           make lavender_defconfig
-          # 修复编译器特性不支持
           scripts/config --disable CC_STACKPROTECTOR_STRONG
           scripts/config --enable CC_STACKPROTECTOR_BASIC
-          # 关闭链接器不支持的Cortex-A53 erratum修复
           scripts/config --disable LDFLAGS_FIX_CORTEX_A53_843419
-          # 彻底关闭DTBO构建
           scripts/config --disable CONFIG_DTBO_BUILD
-          # 补全BPF配置
           scripts/config --enable BPF
           scripts/config --enable BPF_SYSCALL
           scripts/config --enable BPF_JIT
           make olddefconfig
 
       - name: Compile Kernel (Akitlove Clang Only + Skip DTBO)
-        working-directory: kernel/lavender-44 # 与上方工作目录保持一致
+        working-directory: /home/runner/work/kernel/kernel/lavender-44 # 绝对路径保持一致
         run: |
-          # 配置Clang真实路径
           export CLANG_PATH=$(pwd)/../android-kernel-tools/clang/host/linux-x86/clang-r428724
           export CC=$CLANG_PATH/bin/clang
           export CXX=$CLANG_PATH/bin/clang++
@@ -61,7 +63,6 @@ jobs:
           export ARCH=arm64
           export PATH=$CLANG_PATH/bin:$PATH
 
-          # 用纯Clang编译内核
           make -j$(nproc) Image.gz-dtb \
             NO_DTBO=1 \
             DTBO_IMG= \
@@ -70,7 +71,6 @@ jobs:
             CLANG_TRIPLE=$CLANG_TRIPLE \
             ARCH=$ARCH
           
-          # 验证产物
           ls -l arch/arm64/boot/Image.gz-dtb
 
       - name: Clone AnyKernel3
@@ -82,7 +82,7 @@ jobs:
 
       - name: Pack Flashable Zip
         run: |
-          cp kernel/lavender-44/arch/arm64/boot/Image.gz-dtb anykernel/
+          cp /home/runner/work/kernel/kernel/lavender-44/arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
           zip -r9 Lavender-Kernel-Akitlove-Clang-$(date +%Y%m%d).zip * -x .git* README.md *.sh
 
