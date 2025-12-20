@@ -1,4 +1,4 @@
-name: Lavender SDM660 Kernel Build (Akitlove Clang)
+name: Lavender SDM660 Kernel Build (zako~kernel + Speed Up)
 
 on:
   push:
@@ -18,6 +18,17 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
+      - name: Cache Kernel Build Artifacts
+        uses: actions/cache@v3
+        with:
+          path: |
+            ${{ github.workspace }}/out
+            ${{ github.workspace }}/.config
+            ${{ github.workspace }}/include/generated
+          key: kernel-build-${{ github.sha }}
+          restore-keys: |
+            kernel-build-
+
       - name: Cache Akitlove Toolchain
         id: cache_toolchain
         uses: actions/cache@v3
@@ -33,74 +44,85 @@ jobs:
 
       - name: Install Basic Dependencies
         run: |
-          sudo apt update
-          sudo apt install -y \
-            bc bison flex libssl-dev libelf-dev dwarves \
-            git zip unzip wget make
+          sudo apt update -y && sudo apt install -y --no-install-recommends \
+            bc bison flex libssl-dev libelf-dev dwarves git zip unzip wget make
+          sudo apt clean
 
       - name: Dynamic Locate Kernel Root
         run: |
-          # 针对sdm660仓库，直接指定根目录（仓库根即为编译目录）
           echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
           echo "Kernel root directory: $(pwd)"
 
-      - name: Configure Kernel (BPF + Compatibility Fix)
+      - name: Configure Kernel (zako~kernel + BPF + Compatibility Fix)
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
+          export ARCH=arm64
+          # 加载默认配置
           make lavender_defconfig
-          # 修复编译器特性不支持
+          # 显示基础内核版本
+          echo "===== 基础内核版本 ====="
+          make kernelversion
+          # 设置自定义内核名：-zako~kernel
+          export CUSTOM_KERNEL_NAME="-zako~kernel"
+          scripts/config --set-str LOCALVERSION "$CUSTOM_KERNEL_NAME"
+          # 修复编译器/链接器特性
           scripts/config --disable CC_STACKPROTECTOR_STRONG
           scripts/config --enable CC_STACKPROTECTOR_BASIC
-          # 关闭Cortex-A53 erratum修复（链接器不支持）
           scripts/config --disable LDFLAGS_FIX_CORTEX_A53_843419
-          # 彻底关闭DTBO构建
           scripts/config --disable CONFIG_DTBO_BUILD
-          # 补全Android 16 BPF配置
-          scripts/config --enable BPF
-          scripts/config --enable BPF_SYSCALL
-          scripts/config --enable BPF_JIT
-          scripts/config --enable BPF_UNPRIV_DEFAULT_OFF
-          # 应用配置
-          make olddefconfig
+          # 补全BPF配置
+          scripts/config --enable BPF --enable BPF_SYSCALL --enable BPF_JIT
+          make ARCH=arm64 olddefconfig
+          # 显示最终内核名配置
+          echo "===== 最终内核名配置 ====="
+          grep "CONFIG_LOCALVERSION" .config
+          # 显示完整内核版本（基础版本+自定义内核名）
+          echo "===== 完整内核版本 ====="
+          echo "$(make kernelversion)$CUSTOM_KERNEL_NAME"
 
-      - name: Compile Kernel (Akitlove Clang + Skip DTBO)
+      - name: Compile Kernel (Speed Up + Akitlove Clang)
         working-directory: ${{ env.KERNEL_DIR }}
         run: |
-          # 配置Akitlove Clang路径
           CLANG_PATH=$(pwd)/../android-kernel-tools/clang/host/linux-x86/clang-r428724
           export CC=$CLANG_PATH/bin/clang
           export CXX=$CLANG_PATH/bin/clang++
           export CLANG_TRIPLE=aarch64-linux-gnu-
           export ARCH=arm64
           export PATH=$CLANG_PATH/bin:$PATH
-
-          # 编译内核镜像（跳过DTBO）
-          make -j$(nproc) Image.gz-dtb NO_DTBO=1 DTBO_IMG= \
-            CC=$CC CXX=$CXX CLANG_TRIPLE=$CLANG_TRIPLE ARCH=$ARCH
-          
-          # 验证编译产物
+          # 启用ccache编译缓存加速
+          export CCACHE_DIR=${{ github.workspace }}/.ccache
+          export CCACHE_COMPRESS=1
+          # 最大化并行编译
+          make -j$((`nproc` + 2)) ARCH=arm64 Image.gz-dtb NO_DTBO=1 DTBO_IMG= \
+            CC=$CC CXX=$CXX CLANG_TRIPLE=$CLANG_TRIPLE \
+            CCACHE=1
+          # 验证产物
           ls -l arch/arm64/boot/Image.gz-dtb
+          file arch/arm64/boot/Image.gz-dtb
 
       - name: Clone AnyKernel3 for Lavender
         run: |
           git clone https://github.com/osm0sis/AnyKernel3.git anykernel
           cd anykernel
-          # 适配红米Note7 (lavender)设备
-          sed -i 's/device.name1=/device.name1=lavender/' anykernel.sh
-          sed -i 's/device.name2=/device.name2=Redmi Note 7/' anykernel.sh
-          sed -i 's/device.name3=/device.name3=Redmi Note 7 Pro/' anykernel.sh
-          sed -i 's/device.name4=/device.name4=Redmi Note 7S/' anykernel.sh
-          sed -i 's/kernel.string=/kernel.string=SDM660 Kernel (Akitlove Clang)/' anykernel.sh
+          # 适配设备并嵌入自定义内核名
+          CUSTOM_KERNEL_NAME="-zako~kernel"
+          sed -i "s/device.name1=/device.name1=lavender/" anykernel.sh
+          sed -i "s/device.name2=/device.name2=Redmi Note 7/" anykernel.sh
+          sed -i "s/kernel.string=/kernel.string=zako~kernel for Lavender/" anykernel.sh
 
-      - name: Pack Flashable Zip
+      - name: Pack Flashable Zip (zako~kernel)
         run: |
           cp ${{ env.KERNEL_DIR }}/arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
-          zip -r9 Lavender-SDM660-Kernel-$(date +%Y%m%d-%H%M).zip * -x .git* README.md *.sh
+          # 压缩包名包含自定义内核名
+          zip -r9 "Lavender-zako~kernel-$(date +%Y%m%d-%H%M).zip" * -x .git* README.md *.sh
+          # 显示打包结果
+          ls -l *.zip
 
       - name: Upload Compiled Kernel
         uses: actions/upload-artifact@v4
         with:
-          name: Lavender-SDM660-Kernel-Build
-          path: anykernel/Lavender-SDM660-Kernel-*.zip
+          name: Lavender-zako~kernel-Build
+          path: anykernel/Lavender-zako~kernel*.zip
           retention-days: 7
+
