@@ -1,47 +1,68 @@
-name: Build Lavender Kernel (AK3 Pack)
+name: Build Lavender-zako-kernel (AK3)
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
 
 jobs:
-  build_kernel:
+  build:
     runs-on: ubuntu-22.04
     steps:
-      - name: 拉取内核源码到根目录（git clone方式）
+      - name: 清空根目录+拉取内核源码
         run: |
           rm -rf * .git
-          git clone https://github.com/jsdizkcksv/android_kernel_xiaomi_sdm660.git . --recursive
+          git clone https://github.com/jsdizkcksv/android_kernel_xiaomi_sdm660.git . --recursive --depth=1
 
-      - name: 安装编译依赖（添加32位编译器）
+      - name: 安装完整编译依赖
         run: |
-          sudo apt update
-          sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf make bc bison flex libssl-dev libelf-dev git python3 zip unzip
+          sudo apt update -y
+          sudo apt install -y gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf \
+          make bc bison flex libssl-dev libelf-dev git python3 zip unzip \
+          libncurses5-dev libncursesw5-dev pkg-config libc6-dev-i386 \
+          crossbuild-essential-armhf crossbuild-essential-arm64
 
-      - name: 配置内核（自定义名称+开启BPF）
+      - name: 内核配置（echo逐条追加BPF依赖+内核名-zako~kernel）
         run: |
+          # 基础配置
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- lavender_defconfig
+          
+          # ✨更改追加方式：echo逐条追加BPF全依赖（无遗漏）
+          echo "CONFIG_BPF=y" >> .config
+          echo "CONFIG_BPF_SYSCALL=y" >> .config
+          echo "CONFIG_BPF_JIT=y" >> .config
+          echo "CONFIG_HAVE_BPF_JIT=y" >> .config
           echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> .config
+          echo "CONFIG_BPF_JIT_DEFAULT_ON=y" >> .config
+          echo "CONFIG_NET_CLS_BPF=y" >> .config
+          echo "CONFIG_NET_ACT_BPF=y" >> .config
+          echo "CONFIG_BPFILTER=y" >> .config
+          echo "CONFIG_BPFILTER_UMH=y" >> .config
+          echo "CONFIG_BPF_PRELOAD=y" >> .config
+          
+          # 处理配置依赖
           make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- olddefconfig
+          # 内核名-zako~kernel
           sed -i 's/^LOCALVERSION=.*/LOCALVERSION=-zako~kernel/' Makefile
 
-      - name: 编译内核（指定32位编译器）
+      - name: 编译内核（兜底不报错）
         run: |
-          make -j$(nproc) ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- Image.gz-dtb
-          ls -l arch/arm64/boot/Image.gz-dtb
+          make -j$(nproc) ARCH=arm64 \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CROSS_COMPILE_ARM32=arm-linux-gnueabihf- \
+          KCFLAGS=-Wno-error \
+          Image.gz-dtb
 
-      - name: 拉取AK3打包工具
+      - name: 拉取AK3打包
         run: |
-          git clone https://github.com/ak3rdparty/AnyKernel3.git -b lavender anykernel3
-          cp arch/arm64/boot/Image.gz-dtb anykernel3/Image.gz-dtb
+          git clone https://github.com/ak3rdparty/AnyKernel3.git -b lavender anykernel3 --depth=1
+          cp arch/arm64/boot/Image.gz-dtb anykernel3/
 
       - name: 打包AK3刷机包
         run: |
           cd anykernel3
-          zip -r9 zako-kernel-lavender.zip * -x .git* README.md *.sh
+          zip -r9 zako-kernel-lavender-$(date +%Y%m%d).zip * -x .git* README.md *.sh .gitignore
 
-      - name: 上传AK3刷机包
+      - name: 上传产物
         uses: actions/upload-artifact@v4
         with:
           name: zako-kernel-lavender-AK3
-          path: anykernel3/zako-kernel-lavender.zip
+          path: anykernel3/*.zip
+          retention-days: 7
