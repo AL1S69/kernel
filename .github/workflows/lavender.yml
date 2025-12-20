@@ -1,4 +1,4 @@
-name: Build & Pack Lavender Kernel (Akitlove Clang)
+name: Build & Pack Lavender Kernel (Akitlove Official Toolchain)
 
 on:
   push:
@@ -23,21 +23,16 @@ jobs:
         uses: actions/cache@v3
         with:
           path: kernel/android-kernel-tools
-          key: akitlove-clang-toolchain-2025
+          key: akitlove-toolchain-official-2025
 
       - name: Clone Akitlove Kernel Tools
         if: steps.cache-toolchain.outputs.cache-hit != 'true'
         run: |
           cd kernel
           git clone https://github.com/Akitlove/android-kernel-tools.git android-kernel-tools
-          # 赋予Clang可执行权限（匹配Clang目录）
-          chmod -R +x android-kernel-tools/clang/bin/* || true
-
-      - name: Check Toolchain Structure
-        run: |
-          cd kernel/android-kernel-tools
-          ls -R > toolchain-structure.log
-          cat toolchain-structure.log # 日志中验证Clang路径
+          # 赋予编译器可执行权限（匹配真实路径）
+          chmod -R +x android-kernel-tools/clang/host/linux-x86/clang-r428724/bin/*
+          chmod -R +x android-kernel-tools/gcc/linux-x86/bin/* || true
 
       - name: Configure Kernel (BPF + Compatibility + Fix Features)
         working-directory: kernel/lavender-44
@@ -56,22 +51,21 @@ jobs:
           scripts/config --enable BPF_JIT
           make olddefconfig
 
-      - name: Compile Kernel (Akitlove Clang + Skip DTBO)
+      - name: Compile Kernel (Akitlove Clang r428724 + Skip DTBO)
         working-directory: kernel/lavender-44
         run: |
-          # 配置Akitlove Clang路径（核心修改）
-          export TOOLCHAIN_PATH=$(pwd)/../android-kernel-tools/clang/bin
-          export CC=$TOOLCHAIN_PATH/clang
-          export CXX=$TOOLCHAIN_PATH/clang++
+          # 配置Akitlove Clang真实路径（核心修正）
+          export CLANG_PATH=$(pwd)/../android-kernel-tools/clang/host/linux-x86/clang-r428724
+          export GCC_PATH=$(pwd)/../android-kernel-tools/gcc/linux-x86
+          # 环境变量配置
+          export CC=$CLANG_PATH/bin/clang
+          export CXX=$CLANG_PATH/bin/clang++
           export CLANG_TRIPLE=aarch64-linux-gnu-
-          export CROSS_COMPILE=aarch64-linux-gnu-
+          export CROSS_COMPILE=$GCC_PATH/bin/aarch64-linux-android-
           export ARCH=arm64
-          export PATH=$TOOLCHAIN_PATH:$PATH
+          export PATH=$CLANG_PATH/bin:$GCC_PATH/bin:$PATH
 
-          # 安装系统级arm64交叉编译依赖（辅助Clang）
-          sudo apt install -y gcc-aarch64-linux-gnu
-
-          # 用Clang编译内核，双重跳过DTBO
+          # 编译内核，双重跳过DTBO
           make -j$(nproc) Image.gz-dtb \
             NO_DTBO=1 \
             DTBO_IMG= \
@@ -97,12 +91,11 @@ jobs:
         run: |
           cp kernel/lavender-44/arch/arm64/boot/Image.gz-dtb anykernel/
           cd anykernel
-          zip -r9 Lavender-Kernel-Akitlove-Clang-$(date +%Y%m%d-%H%M).zip * -x .git* README.md *.sh
+          zip -r9 Lavender-Kernel-Akitlove-Clang-r428724-$(date +%Y%m%d-%H%M).zip * -x .git* README.md *.sh
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Lavender-Kernel-Clang-Build
-          path: anykernel/Lavender-Kernel-Akitlove-Clang-*.zip
+          name: Lavender-Kernel-Build
+          path: anykernel/Lavender-Kernel-Akitlove-Clang-r428724-*.zip
           retention-days: 7
-
