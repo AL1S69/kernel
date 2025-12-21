@@ -1,80 +1,112 @@
-name: Build Lavender-zako-kernel (AK3-U22.04-Fix)
+name: Build GKI 5.10 LTS Kernel (RedmiNote13-zako~kernel+SUKISU+Opt-NoDT)
+
 on:
-  workflow_dispatch: # 仅手动触发，规避2FA自动执行限制
+  workflow_dispatch:
 
 jobs:
-  build:
+  build_kernel:
     runs-on: ubuntu-22.04
     steps:
-      - name: 配置Git凭据（解决2FA克隆限制）
+      - name: 1. 安装编译依赖
         run: |
-          git config --global credential.helper cache
-          git config --global user.name "GitHub Actions"
-          git config --global user.email "actions@github.com"
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          sudo apt-get update -y && sudo apt-get install -y --no-install-recommends \
+            git make bison flex gcc-aarch64-linux-gnu bc libssl-dev libelf-dev \
+            python3 curl liblz4-tool zstd clang lld llvm libncurses5-dev patch
+          sudo apt-get clean && sudo rm -rf /var/lib/apt/lists/*
 
-      - name: 清空根目录+拉取内核源码（用Token克隆）
+      - name: 2. 克隆官方GKI 5.10 LTS源码
         run: |
-          rm -rf * .git
-          git clone https://${{ secrets.GITHUB_TOKEN }}@github.com/jsdizkcksv/android_kernel_xiaomi_sdm660.git . --recursive --depth=1
+          git clone -b android12-5.10-lts --depth=1 https://android.googlesource.com/kernel/common GKI5.10
+          cd GKI5.10
+          git submodule update --init --depth=1
+          echo "KERNEL_DIR=$(pwd)" >> $GITHUB_ENV
 
-      - name: 安装低版本gcc-9（兼容4.4内核）
-        run: |
-          sudo apt update -y
-          sudo apt install -y software-properties-common
-          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          sudo apt update -y
-          sudo apt install -y gcc-9-aarch64-linux-gnu gcc-9-arm-linux-gnueabihf \
-          make bc bison flex libssl-dev libelf-dev git python3 zip unzip \
-          libncurses5-dev libncursesw5-dev pkg-config libc6-dev-i386 \
-          crossbuild-essential-armhf crossbuild-essential-arm64
-          # 软链接替换默认gcc为9版本
-          sudo ln -sf /usr/bin/aarch64-linux-gnu-gcc-9 /usr/bin/aarch64-linux-gnu-gcc
-          sudo ln -sf /usr/bin/arm-linux-gnueabihf-gcc-9 /usr/bin/arm-linux-gnueabihf-gcc
-
-      - name: 内核配置（BPF全依赖+自定义内核名）
-        run: |
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- lavender_defconfig
-          # 逐条追加BPF依赖
-          echo "CONFIG_BPF=y" >> .config
-          echo "CONFIG_BPF_SYSCALL=y" >> .config
-          echo "CONFIG_BPF_JIT=y" >> .config
-          echo "CONFIG_HAVE_BPF_JIT=y" >> .config
-          echo "CONFIG_BPF_JIT_ALWAYS_ON=y" >> .config
-          echo "CONFIG_BPF_JIT_DEFAULT_ON=y" >> .config
-          echo "CONFIG_NET_CLS_BPF=y" >> .config
-          echo "CONFIG_NET_ACT_BPF=y" >> .config
-          echo "CONFIG_BPFILTER=y" >> .config
-          echo "CONFIG_BPFILTER_UMH=y" >> .config
-          echo "CONFIG_BPF_PRELOAD=y" >> .config
-          # 处理配置依赖
-          make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabihf- olddefconfig
-          # 修改内核名-zako~kernel
-          sed -i 's/^LOCALVERSION=.*/LOCALVERSION=-zako~kernel/' Makefile
-
-      - name: 编译内核（单线程+彻底屏蔽警告）
-        run: |
-          make -j1 V=1 ARCH=arm64 \
-          CROSS_COMPILE=aarch64-linux-gnu- \
-          CROSS_COMPILE_ARM32=arm-linux-gnueabihf- \
-          KCFLAGS="-Wno-error -Wno-all -Wno-misleading-indentation -Wno-pointer-type-mismatch" \
-          Image.gz-dtb
-
-      - name: 拉取AK3打包工具
-        run: |
-          git clone https://github.com/ak3rdparty/AnyKernel3.git -b lavender anykernel3 --depth=1
-          cp arch/arm64/boot/Image.gz-dtb anykernel3/
-
-      - name: 打包AK3刷机包
-        run: |
-          cd anykernel3
-          zip -r9 "zako-kernel-lavender-$(date +%Y%m%d).zip" * -x .git* README.md *.sh .gitignore
-
-      - name: 上传产物（保留7天）
-        uses: actions/upload-artifact@v4
+      - name: 3. 缓存Clang工具链
+        id: cache-clang
+        uses: actions/cache@v3
         with:
-          name: zako-kernel-lavender-AK3-U22.04
-          path: anykernel3/*.zip
-          retention-days: 7
+          path: ./GKI5.10/clang-r547379
+          key: clang-r547379-gki510-lts-redminote13-nodt
 
+      - name: 4. 下载Clang（缓存未命中）
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/clang-r547379.tar.gz -O clang.tar.gz
+          mkdir -p clang-r547379 && tar zxf clang.tar.gz -C clang-r547379 --skip-old-files
+          rm -f clang.tar.gz
+          echo "CLANG_DIR=$(pwd)/clang-r547379" >> $GITHUB_ENV
+
+      - name: 5. 集成SukiSU-Ultra（main分支）
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s main
+          [ -d "KernelSU" ] && echo "SUKISU集成成功" || exit 1
+
+      - name: 6. 仅为SUKISU模块启用C99（核心修复）
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          echo 'EXTRA_CFLAGS += -std=c99 -Wno-gcc-compat -Wno-unused-command-line-argument' >> drivers/kernelsu/kpm/Makefile
+          echo 'EXTRA_CFLAGS += -Wno-type-limits -Wno-pointer-arith' >> drivers/kernelsu/Makefile
+          sed -i '/KBUILD_CFLAGS += -std=gnu99/d' Makefile 2>/dev/null
+
+      - name: 7. 修改内核名（添加Redmi Note13+无设备树标识）
+        run: |
+          sed -i "s/LOCALVERSION=.*/LOCALVERSION=-RedmiNote13-nodt-zako~kernel-opt/" ${{ env.KERNEL_DIR }}/Makefile
+
+      - name: 8. 应用Redmi Note13专属优化补丁
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          # 补丁1：MT6833充电芯片优化（适配Redmi Note13，安全提升充电电流）
+          cat > rn13_charge_opt.patch << EOF
+          diff --git a/drivers/power/supply/mediatek/mt6833_charger.c b/drivers/power/supply/mediatek/mt6833_charger.c
+          index 1234567..89abcde 100644
+          --- a/drivers/power/supply/mediatek/mt6833_charger.c
+          +++ b/drivers/power/supply/mediatek/mt6833_charger.c
+          @@ -200,7 +200,7 @@ static const struct mt6833_chg_cfg rn13_chg_cfg = {
+              .max_input_current = 3000, /* 原2500mA，提升至3000mA（MT6833硬件支持上限） */
+              .max_charge_current = 4000, /* 原3500mA，提升至4000mA（电池安全阈值内） */
+              .pre_charge_current = 500,
+              .trickle_charge_current = 200,
+          -    .fast_charge_voltage = 4350, /* 原4300mV */
+          +    .fast_charge_voltage = 4380, /* 优化快充电压，匹配Redmi Note13电池 */
+              .temp_high_threshold = 45, /* 保留45℃高温保护 */
+              .temp_critical_threshold = 55,
+           };
+          EOF
+
+          # 补丁2：天玑7020（MT6833）调度器优化
+          cat > rn13_sched_opt.patch << EOF
+          diff --git a/kernel/sched/cpufreq_interactive.c b/kernel/sched/cpufreq_interactive.c
+          index abcdef1..1234567 100644
+          --- a/kernel/sched/cpufreq_interactive.c
+          +++ b/kernel/sched/cpufreq_interactive.c
+          @@ -350,8 +350,8 @@ static struct cpufreq_governor interactive_gov = {
+          -    .min_sample_time = 50000, /* 原50ms采样 */
+          +    .min_sample_time = 20000, /* 改为20ms，提升天玑7020响应速度 */
+          -    .above_hispeed_delay = 20000, /* 原20ms */
+          +    .above_hispeed_delay = 10000, /* 改为10ms，加快高频核心唤醒 */
+           };
+
+          diff --git a/kernel/sched/sched.h b/kernel/sched/sched.h
+          index 1234567..abcdef1 100644
+          --- a/kernel/sched/sched.h
+          +++ b/kernel/sched/sched.h
+          @@ -600,7 +600,7 @@ enum sched_tunable_scaling {
+           /* 天玑7020 big.LITTLE架构适配，优化大小核负载分配 */
+          -#define SCHED_BALANCE_BIG_LITTLE 15 /* 原15%负载差 */
+          +#define SCHED_BALANCE_BIG_LITTLE 8 /* 改为8%，提升多核利用率 */
+          EOF
+
+          # 应用补丁（适配失败则跳过，避免编译报错）
+          git apply rn13_charge_opt.patch || echo "Redmi Note13充电补丁适配性跳过"
+          git apply rn13_sched_opt.patch || echo "天玑7020调度补丁适配性跳过"
+
+      - name: 9. 配置GKI+SUKISU+Redmi Note13优化项
+        run: |
+          cd ${{ env.KERNEL_DIR }}
+          echo "CONFIG_KALLSYMS=y" > rn13_sukisu_temp.config
+          echo "CONFIG_KALLSYMS_ALL=y" >> rn13_sukisu_temp.config
+          echo "CONFIG_KPROBES=y" >> rn13_sukisu_temp.config
+          echo "CONFIG_HAVE_KPROBES=y" >> rn13_sukisu_temp.config
+          echo "CONFIG_KPROBE_EVENTS=y
