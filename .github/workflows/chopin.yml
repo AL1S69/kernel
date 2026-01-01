@@ -1,4 +1,4 @@
-name: ARM64 Kernel Build & Pack (chopin AB, Stable)
+name: ARM64 Kernel Build & Pack (chopin AB, Final Stable)
 
 on:
   push:
@@ -31,24 +31,22 @@ jobs:
           path: anykernel3
           ref: master
 
-      - name: Install System Dependencies (Ubuntu 22.04 + Python2 Manual)
+      - name: Install System Dependencies (Your Custom List)
         run: |
           sudo apt update -y 2>/dev/null
-          # 安装基础依赖（移除 python2）
-          sudo apt install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python3-pip wget 2>/dev/null
-          # 手动下载并安装 Python2.7.18（最后一个官方版本）
-          wget https://www.python.org/ftp/python/2.7.18/Python-2.7.18.tgz -P ${{ github.workspace }} 2>/dev/null
-          tar -xzf ${{ github.workspace }}/Python-2.7.18.tgz -C ${{ github.workspace }} 2>/dev/null
-          cd ${{ github.workspace }}/Python-2.7.18
-          ./configure --prefix=/usr/local/python2 2>/dev/null
-          make -j$(nproc) 2>/dev/null
-          sudo make install 2>/dev/null
-          # 建立 Python2 软链接，适配内核编译
-          sudo ln -s /usr/local/python2/bin/python2 /usr/bin/python2 2>/dev/null
-          sudo ln -s /usr/bin/python2 /usr/bin/python 2>/dev/null
-          # 验证 Python2 安装
-          python2 --version
+          # 使用你提供的依赖列表，适配 Ubuntu 22.04
+          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 zstd libc6 binutils libc6-dev-i386 gcc g++ p7zip p7zip-full 2>/dev/null
+          # Python3 兼容：建立 python 软链接指向 python3
+          sudo ln -sf /usr/bin/python3 /usr/bin/python 2>/dev/null
+          # 验证 Python 版本
           python --version
+
+      - name: Adapt Kernel Scripts to Python3 (关键兼容步骤)
+        run: |
+          # 遍历内核源码中所有 .py 脚本，将 shebang 从 #!/usr/bin/env python 改为 #!/usr/bin/env python3
+          find ${{ github.workspace }}/kernel_src -name "*.py" -type f -exec sed -i 's/^#!\/usr\/bin\/env python/#!\/usr\/bin\/env python3/g' {} \;
+          # 遍历内核源码中所有调用 python 的脚本，替换 python 为 python3
+          find ${{ github.workspace }}/kernel_src -type f -exec grep -l "python " {} \; | xargs sed -i 's/python /python3 /g' 2>/dev/null
 
       - name: Download & Extract LLVM-19.1.0 (Workdir)
         run: |
@@ -104,7 +102,4 @@ jobs:
           name: Chopin-Kernel-Image
           path: ${{ github.workspace }}/kernel_src/out/arch/arm64/boot/Image.gz-dtb
 
-      - name: Upload Packed Flashable Zip
-        uses: actions/upload-artifact@v4
-        with:
-          name: Chopin-Kernel-Flashab
+      
