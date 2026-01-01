@@ -1,4 +1,4 @@
-name: ARM64 Kernel Build & Pack (chopin AB, Root & Sudo, Ubuntu 22.04)
+name: ARM64 Kernel Build & Pack (chopin AB, Stable)
 
 on:
   push:
@@ -11,105 +11,103 @@ jobs:
   build_and_pack:
     runs-on: ubuntu-latest
     steps:
-      - name: Maximize Build Space (Sudo, Root Dir, Fault-Tolerant)
+      - name: Maximize Build Space (Stable)
         run: |
-          sudo rm -rf /usr/share/dotnet 2>/dev/null
-          sudo rm -rf /usr/local/lib/android 2>/dev/null
-          sudo rm -rf /opt/ghc 2>/dev/null
-          sudo rm -rf /usr/local/share/powershell 2>/dev/null
-          sudo rm -rf /usr/lib/jvm 2>/dev/null
+          # 仅清理 Runner 工作目录下的冗余文件，避免系统目录操作
+          rm -rf ${{ github.workspace }}/* 2>/dev/null
           sudo apt clean -y 2>/dev/null
           sudo docker rmi $(sudo docker images -q) 2>/dev/null || true
           df -h
-        working-directory: /
 
-      - name: Checkout Kernel Source (Root Dir)
+      - name: Checkout Kernel Source (Default Workdir)
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
-          path: /kernel_src
+          path: kernel_src # 检出到工作目录下的 kernel_src 子目录
 
-      - name: Checkout AnyKernel3 (Root Dir)
+      - name: Checkout AnyKernel3 (Default Workdir)
         uses: actions/checkout@v4
         with:
           repository: osm0sis/AnyKernel3
-          path: /anykernel3
+          path: anykernel3 # 检出到工作目录下的 anykernel3 子目录
           ref: master
 
-      - name: Install System Dependencies (Sudo, Ubuntu 22.04)
+      - name: Install System Dependencies (Ubuntu 22.04)
         run: |
           sudo apt update -y 2>/dev/null
           sudo apt install -y bc bison build-essential ccache curl flex g++-multilib gcc-multilib git gnupg gperf imagemagick lib32ncurses-dev lib32readline-dev lib32z1-dev liblz4-tool libncurses-dev libsdl1.2-dev libssl-dev libxml2 libxml2-utils lzop pngcrush rsync schedtool squashfs-tools xsltproc zip zlib1g-dev python2 python3-pip 2>/dev/null
           sudo ln -s /usr/bin/python2 /usr/bin/python 2>/dev/null
-        working-directory: /
 
-      - name: Download & Extract LLVM-19.1.0 (Sudo, Root Dir)
+      - name: Download & Extract LLVM-19.1.0 (Workdir)
         run: |
-          sudo mkdir -p /toolchains/llvm
-          sudo curl -L https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz | sudo tar -xJ -C /toolchains/llvm --strip-components=1 2>/dev/null
-        working-directory: /
+          mkdir -p ${{ github.workspace }}/toolchains/llvm
+          curl -L https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz | tar -xJ -C ${{ github.workspace }}/toolchains/llvm --strip-components=1 2>/dev/null
 
-      - name: Download & Extract Google GCC 4.9 (Sudo, Root Dir)
+      - name: Download & Extract Google GCC 4.9 (Workdir)
         run: |
-          sudo mkdir -p /toolchains/gcc
-          sudo curl -L https://github.com/JackA1ltman/Google-GCC-Android-4.9/archive/refs/heads/master.tar.gz | sudo tar -xz -C /toolchains/gcc --strip-components=1 2>/dev/null
-        working-directory: /
+          mkdir -p ${{ github.workspace }}/toolchains/gcc
+          curl -L https://github.com/JackA1ltman/Google-GCC-Android-4.9/archive/refs/heads/master.tar.gz | tar -xz -C ${{ github.workspace }}/toolchains/gcc --strip-components=1 2>/dev/null
 
-      - name: Configure Build Env (Sudo, Root Dir, Ubuntu 22.04)
+      - name: Configure Build Env (Stable, Disable Warnings)
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH=/toolchains/llvm/bin:/toolchains/gcc/bin:$PATH
+          export PATH=${{ github.workspace }}/toolchains/llvm/bin:${{ github.workspace }}/toolchains/gcc/bin:$PATH
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
           export CC=clang
           export CXX=clang++
           export LD=ld.lld
-          # 配置阶段禁用警告转错误
+          # 禁用警告转错误
           export KCFLAGS=-Wno-error
           export KBUILD_CFLAGS=-Wno-error
           export CLANG_FLAGS=-Wno-error
-          sudo make O=/kernel_src/out -C /kernel_src chopin_defconfig 2>/dev/null
-        working-directory: /
+          # 进入内核源码目录执行配置
+          cd ${{ github.workspace }}/kernel_src
+          make O=out chopin_defconfig 2>/dev/null
 
-      - name: Build Kernel with All Cores & Save Log (Sudo, Root Dir)
+      - name: Build Kernel with All Cores (Stable)
         run: |
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH=/toolchains/llvm/bin:/toolchains/gcc/bin:$PATH
+          export PATH=${{ github.workspace }}/toolchains/llvm/bin:${{ github.workspace }}/toolchains/gcc/bin:$PATH
           export CROSS_COMPILE=aarch64-linux-android-
           export CROSS_COMPILE_ARM32=arm-linux-androideabi-
           export CC=clang
           export CXX=clang++
           export LD=ld.lld
-          # 编译阶段全局禁用警告转错误，覆盖内核默认配置
-          sudo make -j$(nproc) O=/kernel_src/out -C /kernel_src Image.gz-dtb KCFLAGS=-Wno-error KBUILD_CFLAGS=-Wno-error CLANG_FLAGS=-Wno-error 2>&1 | sudo tee /kernel_build.log
+          cd ${{ github.workspace }}/kernel_src
+          # 全核心编译 + 禁用警告转错误
+          make -j$(nproc) O=out Image.gz-dtb KCFLAGS=-Wno-error KBUILD_CFLAGS=-Wno-error CLANG_FLAGS=-Wno-error 2>&1 | tee ${{ github.workspace }}/kernel_build.log
 
-      - name: Pack Kernel with AnyKernel3 (Sudo, AB Partition)
+      - name: Pack Kernel with AnyKernel3 (AB Partition)
         run: |
-          sudo cp /kernel_src/out/arch/arm64/boot/Image.gz-dtb /anykernel3/ 2>/dev/null
-          sudo sed -i 's/^device.name1=.*/device.name1=chopin/' /anykernel3/anykernel.sh 2>/dev/null
-          sudo sed -i 's/^is_slot_device=.*/is_slot_device=1/' /anykernel3/anykernel.sh 2>/dev/null
-          cd /anykernel3
-          sudo zip -r9 Chopin-Kernel-Optimized-$(date +%Y%m%d).zip * -x .git README.md LICENSE 2>/dev/null
-          sudo cp /anykernel3/Chopin-Kernel-Optimized-$(date +%Y%m%d).zip / 2>/dev/null
-        working-directory: /
+          # 复制内核镜像到 AnyKernel3 目录
+          cp ${{ github.workspace }}/kernel_src/out/arch/arm64/boot/Image.gz-dtb ${{ github.workspace }}/anykernel3/ 2>/dev/null
+          # 适配 AB 分区
+          sed -i 's/^device.name1=.*/device.name1=chopin/' ${{ github.workspace }}/anykernel3/anykernel.sh 2>/dev/null
+          sed -i 's/^is_slot_device=.*/is_slot_device=1/' ${{ github.workspace }}/anykernel3/anykernel.sh 2>/dev/null
+          # 打包
+          cd ${{ github.workspace }}/anykernel3
+          zip -r9 Chopin-Kernel-$(date +%Y%m%d).zip * -x .git README.md LICENSE 2>/dev/null
+          # 复制打包文件到工作根目录
+          cp Chopin-Kernel-$(date +%Y%m%d).zip ${{ github.workspace }}/ 2>/dev/null
 
-      - name: Upload Kernel Image (Sudo, Root Path)
+      - name: Upload Kernel Image
         uses: actions/upload-artifact@v4
         with:
           name: Chopin-Kernel-Image
-          path: /kernel_src/out/arch/arm64/boot/Image.gz-dtb
+          path: ${{ github.workspace }}/kernel_src/out/arch/arm64/boot/Image.gz-dtb
 
-      - name: Upload Packed Flashable Zip (Root Path)
+      - name: Upload Packed Flashable Zip
         uses: actions/upload-artifact@v4
         with:
           name: Chopin-Kernel-Flashable-Zip
-          path: /Chopin-Kernel-Optimized-*.zip
+          path: ${{ github.workspace }}/Chopin-Kernel-*.zip
 
-      - name: Upload Build Log (Root Path)
+      - name: Upload Build Log
         uses: actions/upload-artifact@v4
         with:
           name: Chopin-Kernel-Build-Log
-          path: /kernel_build.log
+          path: ${{ github.workspace }}/kernel_build.log
 
