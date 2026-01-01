@@ -1,4 +1,4 @@
-name: Chopin Kernel Build (Clang Minimal)
+name: Chopin Kernel Build (Clang Minimal Fix)
 
 on:
   workflow_dispatch:
@@ -11,10 +11,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Clean Env
+      - name: Clean Env (Fix Perm)
         run: |
-          sudo rm -rf ${{ github.workspace }}/* /usr/share/dotnet /opt/ghc
-          sudo apt clean -y && apt autoremove -y
+          # 仅清理工作目录，避免系统目录权限问题
+          rm -rf ${{ github.workspace }}/* 2>/dev/null
+          # 系统清理操作添加sudo并屏蔽警告
+          sudo apt clean -y 2>/dev/null
+          sudo apt autoremove -y 2>/dev/null
           df -h
 
       - name: Checkout Source
@@ -31,21 +34,21 @@ jobs:
           path: anykernel3
           ref: master
 
-      - name: Install Deps
+      - name: Install Deps (Silent)
         run: |
           sudo apt update -y 2>/dev/null
-          sudo apt install -y bc bison build-essential ccache curl flex git libssl-dev libncurses-dev lib32z1-dev liblz4-tool lzop squashfs-tools xsltproc zip zlib1g-dev device-tree-compiler python3 binutils unzip
+          sudo apt install -y bc bison build-essential ccache curl flex git libssl-dev libncurses-dev lib32z1-dev liblz4-tool lzop squashfs-tools xsltproc zip zlib1g-dev device-tree-compiler python3 binutils unzip 2>/dev/null
           sudo ln -sf /usr/bin/python3 /usr/bin/python
 
       - name: Python3 Adapt
         run: |
-          find ${{ github.workspace }}/kernel_src -name "*.py" -exec sed -i 's/python/python3/' {} \;
+          find ${{ github.workspace }}/kernel_src -name "*.py" -exec sed -i 's/python/python3/' {} \; 2>/dev/null
 
-      - name: Get LLVM
+      - name: Get LLVM (Retry)
         run: |
           mkdir -p ${{ github.workspace }}/toolchains/llvm
-          curl -L --retry 5 -o ${{ github.workspace }}/llvm.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz
-          tar -xJ -C ${{ github.workspace }}/toolchains/llvm --strip-components=1 -f ${{ github.workspace }}/llvm.tar.xz
+          curl -L --retry 5 -o ${{ github.workspace }}/llvm.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz 2>/dev/null
+          tar -xJ -C ${{ github.workspace }}/toolchains/llvm --strip-components=1 -f ${{ github.workspace }}/llvm.tar.xz 2>/dev/null
           [ -f "${{ github.workspace }}/toolchains/llvm/bin/clang" ] || exit 1
           rm -f ${{ github.workspace }}/llvm.tar.xz
           echo "${{ github.workspace }}/toolchains/llvm/bin" >> $GITHUB_PATH
@@ -56,20 +59,20 @@ jobs:
           export ARCH=arm64 SUBARCH=arm64
           export CC=clang CXX=clang++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
           export KCFLAGS=-Wno-error KBUILD_CFLAGS=-Wno-error CLANG_FLAGS=-Wno-error
-          make O=out defconfig V=1
+          make O=out defconfig V=1 2>/dev/null
           [ -f "out/.config" ] || exit 1
           for TARGET in Image.gz-dtb Image-dtb Image; do
-            make -j$(nproc) O=out $TARGET && export KERNEL_TARGET=$TARGET && break
+            make -j$(nproc) O=out $TARGET 2>/dev/null && export KERNEL_TARGET=$TARGET && break
           done
           [ -f "out/arch/arm64/boot/$KERNEL_TARGET" ] || exit 1
 
       - name: Pack
         run: |
-          cp ${{ github.workspace }}/kernel_src/out/arch/arm64/boot/$KERNEL_TARGET ${{ github.workspace }}/anykernel3/Image.gz-dtb
-          sed -i -e 's/^device.name1=.*/device.name1=chopin/' -e 's/^is_slot_device=.*/is_slot_device=1/' ${{ github.workspace }}/anykernel3/anykernel.sh
+          cp ${{ github.workspace }}/kernel_src/out/arch/arm64/boot/$KERNEL_TARGET ${{ github.workspace }}/anykernel3/Image.gz-dtb 2>/dev/null
+          sed -i -e 's/^device.name1=.*/device.name1=chopin/' -e 's/^is_slot_device=.*/is_slot_device=1/' ${{ github.workspace }}/anykernel3/anykernel.sh 2>/dev/null
           cd ${{ github.workspace }}/anykernel3
-          zip -r9 Chopin-Kernel-$(date +%Y%m%d).zip * -x .git* README.md LICENSE
-          cp *.zip ${{ github.workspace }}/
+          zip -r9 Chopin-Kernel-$(date +%Y%m%d).zip * -x .git* README.md LICENSE 2>/dev/null
+          cp *.zip ${{ github.workspace }}/ 2>/dev/null
 
       - name: Upload
         uses: actions/upload-artifact@v4
