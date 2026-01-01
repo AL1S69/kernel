@@ -1,67 +1,86 @@
-name: ARM64 Kernel Build & Pack (chopin AB, Clang Only)
+name: Chopin Kernel Build (Clang Only, Ultimate Stable)
 
 on:
+  workflow_dispatch: # 仅手动触发，避免自动编译触发频率过高
   push:
     branches: [ android-S ]
-  pull_request:
-    branches: [ android-S ]
-  workflow_dispatch:
+    paths-ignore: # 忽略非内核源码文件的提交
+      - 'README.md'
+      - '.gitignore'
+      - 'docs/**'
 
 jobs:
-  build_and_pack:
+  build_kernel:
     runs-on: ubuntu-latest
+    timeout-minutes: 120 # 延长超时时间，适配联发科内核编译时长
     steps:
-      - name: Maximize Build Space (Stable)
+      - name: 1. Clean Workspace & Maximize Disk
         run: |
-          rm -rf ${{ github.workspace }}/* 2>/dev/null
-          sudo apt clean -y 2>/dev/null
+          sudo rm -rf ${{ github.workspace }}/* /usr/share/dotnet /usr/local/lib/android /opt/ghc 2>/dev/null
+          sudo apt clean -y && sudo apt autoremove -y 2>/dev/null
           sudo docker rmi $(sudo docker images -q) 2>/dev/null || true
           df -h
 
-      - name: Checkout Kernel Source
+      - name: 2. Checkout Kernel Source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
           path: kernel_src
+          submodules: recursive # 拉取子模块，避免源码缺失
 
-      - name: Checkout AnyKernel3
+      - name: 3. Checkout AnyKernel3 (AB Partition)
         uses: actions/checkout@v4
         with:
           repository: osm0sis/AnyKernel3
           path: anykernel3
           ref: master
 
-      - name: Install System Dependencies (Clang Only)
+      - name: 4. Install Dependencies (Clang Only)
         run: |
           sudo apt update -y 2>/dev/null
-          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 zstd libc6 binutils p7zip p7zip-full 2>/dev/null
+          # 最小化依赖，仅保留联发科内核编译必需组件
+          sudo apt install -y \
+            bc bison build-essential ccache curl flex git libssl-dev \
+            libncurses-dev lib32ncurses-dev lib32z1-dev liblz4-tool \
+            libxml2-utils lzop pngcrush rsync squashfs-tools xsltproc \
+            zip zlib1g-dev device-tree-compiler python3 binutils \
+            gcc-multilib g++-multilib unzip p7zip-full
+          # Python3 兼容配置
           sudo ln -sf /usr/bin/python3 /usr/bin/python 2>/dev/null
+          # 验证关键依赖
           python --version
-          dtc --version || echo "device-tree-compiler not installed"
+          dtc --version
+          clang --version || echo "系统Clang未安装，将使用预编译LLVM"
 
-      - name: Adapt Kernel Scripts to Python3
+      - name: 5. Adapt Kernel Scripts to Python3
         run: |
+          # 批量修改Python脚本shebang
           find ${{ github.workspace }}/kernel_src -name "*.py" -type f -exec sed -i 's/^#!\/usr\/bin\/env python/#!\/usr\/bin\/env python3/g' {} \;
+          # 替换脚本中python调用
           find ${{ github.workspace }}/kernel_src -type f -exec grep -l "python " {} \; | xargs sed -i 's/python /python3 /g' 2>/dev/null
 
-      - name: Download & Extract LLVM-19.1.0 (With Check)
+      - name: 6. Download & Verify LLVM-19.1.0
         run: |
           mkdir -p ${{ github.workspace }}/toolchains/llvm
-          curl -L --output ${{ github.workspace }}/llvm.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz
+          # 下载预编译LLVM，添加断点续传
+          curl -L --retry 5 --output ${{ github.workspace }}/llvm.tar.xz \
+            https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz
+          # 解压并校验关键组件
           tar -xJ -C ${{ github.workspace }}/toolchains/llvm --strip-components=1 -f ${{ github.workspace }}/llvm.tar.xz
           if [ ! -f "${{ github.workspace }}/toolchains/llvm/bin/clang" ] || [ ! -f "${{ github.workspace }}/toolchains/llvm/bin/ld.lld" ]; then
-            echo "LLVM解压失败：缺少关键组件"
+            echo "LLVM解压失败，终止编译"
             exit 1
           fi
           rm -f ${{ github.workspace }}/llvm.tar.xz
+          # 添加工具链到PATH
+          echo "${{ github.workspace }}/toolchains/llvm/bin" >> $GITHUB_PATH
 
-      - name: Configure Build Env (Clang Only, Debug)
+      - name: 7. Configure Kernel (Chopin Defconfig)
         run: |
-          echo "Workspace: ${{ github.workspace }}"
-          echo "Clang Path: ${{ github.workspace }}/toolchains/llvm/bin"
+          cd ${{ github.workspace }}/kernel_src
+          # 纯Clang环境变量配置
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH=${{ github.workspace }}/toolchains/llvm/bin:$PATH
           export CC=clang
           export CXX=clang++
           export LD=ld.lld
@@ -70,19 +89,23 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
-          export KCFLAGS=-Wno-error
-          export KBUILD_CFLAGS=-Wno-error
-          export CLANG_FLAGS=-Wno-error
-          clang --version || echo "Clang调用失败"
-          ld.lld --version || echo "ld.lld调用失败"
-          cd ${{ github.workspace }}/kernel_src
+          # 禁用警告转错误，开启编译调试
+          export KCFLAGS="-Wno-error -v"
+          export KBUILD_CFLAGS="-Wno-error"
+          export CLANG_FLAGS="-Wno-error"
+          # 生成配置并保存日志
           make O=out chopin_defconfig V=1 2>&1 | tee ${{ github.workspace }}/defconfig.log
+          # 验证配置文件
+          if [ ! -f "${{ github.workspace }}/kernel_src/out/.config" ]; then
+            echo "Defconfig生成失败，终止编译"
+            exit 1
+          fi
 
-      - name: Build Kernel with Clang (All Cores)
+      - name: 8. Build Kernel (Multi-Target Fallback)
         run: |
+          cd ${{ github.workspace }}/kernel_src
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH=${{ github.workspace }}/toolchains/llvm/bin:$PATH
           export CC=clang
           export CXX=clang++
           export LD=ld.lld
@@ -91,22 +114,20 @@ jobs:
           export OBJCOPY=llvm-objcopy
           export OBJDUMP=llvm-objdump
           export STRIP=llvm-strip
-          export KCFLAGS=-Wno-error
-          export KBUILD_CFLAGS=-Wno-error
-          export CLANG_FLAGS=-Wno-error
-          cd ${{ github.workspace }}/kernel_src
-          make -j$(nproc) O=out Image.gz-dtb 2>&1 | tee ${{ github.workspace }}/kernel_build.log
-
-      - name: Pack Kernel with AnyKernel3 (AB Partition)
-        run: |
-          cp ${{ github.workspace }}/kernel_src/out/arch/arm64/boot/Image.gz-dtb ${{ github.workspace }}/anykernel3/ 2>/dev/null
-          sed -i 's/^device.name1=.*/device.name1=chopin/' ${{ github.workspace }}/anykernel3/anykernel.sh 2>/dev/null
-          sed -i 's/^is_slot_device=.*/is_slot_device=1/' ${{ github.workspace }}/anykernel3/anykernel.sh 2>/dev/null
-          cd ${{ github.workspace }}/anykernel3
-          zip -r9 Chopin-Kernel-Clang-$(date +%Y%m%d).zip * -x .git README.md LICENSE 2>/dev/null
-          cp Chopin-Kernel-Clang-$(date +%Y%m%d).zip ${{ github.workspace }}/ 2>/dev/null
-
-      - name: Upload All Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: Chopin-Kernel-
+          export KCFLAGS="-Wno-error"
+          export KBUILD_CFLAGS="-Wno-error"
+          export CLANG_FLAGS="-Wno-error"
+          # 多目标编译兜底，按优先级尝试
+          BUILD_SUCCESS=0
+          for TARGET in Image.gz-dtb Image-dtb Image dtb.img boot.img; do
+            echo "尝试编译目标: $TARGET"
+            make -j$(nproc) O=out $TARGET 2>&1 | tee ${{ github.workspace }}/kernel_build_$TARGET.log
+            if [ -f "${{ github.workspace }}/kernel_src/out/arch/arm64/boot/$TARGET" ]; then
+              echo "编译$TARGET成功"
+              BUILD_SUCCESS=1
+              export KERNEL_TARGET=$TARGET
+              break
+            fi
+          done
+          # 编译失败则终止
+          if 
