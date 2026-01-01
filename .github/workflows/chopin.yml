@@ -1,4 +1,4 @@
-name: ARM64 Kernel Build & Pack (chopin AB, Final Stable)
+name: ARM64 Kernel Build & Pack (chopin AB, Clang Only)
 
 on:
   push:
@@ -31,75 +31,86 @@ jobs:
           path: anykernel3
           ref: master
 
-      - name: Install System Dependencies (Your Custom List)
+      - name: Install System Dependencies (Clang Only)
         run: |
           sudo apt update -y 2>/dev/null
-          # 使用你提供的依赖列表，适配 Ubuntu 22.04
-          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 zstd libc6 binutils libc6-dev-i386 gcc g++ p7zip p7zip-full 2>/dev/null
-          # Python3 兼容：建立 python 软链接指向 python3
+          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 zstd libc6 binutils p7zip p7zip-full 2>/dev/null
           sudo ln -sf /usr/bin/python3 /usr/bin/python 2>/dev/null
-          # 验证 Python 版本
+          # 验证关键依赖
           python --version
+          dtc --version || echo "device-tree-compiler not installed"
 
-      - name: Adapt Kernel Scripts to Python3 (关键兼容步骤)
+      - name: Adapt Kernel Scripts to Python3
         run: |
-          # 遍历内核源码中所有 .py 脚本，将 shebang 从 #!/usr/bin/env python 改为 #!/usr/bin/env python3
           find ${{ github.workspace }}/kernel_src -name "*.py" -type f -exec sed -i 's/^#!\/usr\/bin\/env python/#!\/usr\/bin\/env python3/g' {} \;
-          # 遍历内核源码中所有调用 python 的脚本，替换 python 为 python3
           find ${{ github.workspace }}/kernel_src -type f -exec grep -l "python " {} \; | xargs sed -i 's/python /python3 /g' 2>/dev/null
 
-      - name: Download & Extract LLVM-19.1.0 (Workdir)
+      - name: Download & Extract LLVM-19.1.0 (With Check)
         run: |
           mkdir -p ${{ github.workspace }}/toolchains/llvm
-          curl -L https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz | tar -xJ -C ${{ github.workspace }}/toolchains/llvm --strip-components=1 2>/dev/null
+          # 下载LLVM预编译包并校验完整性
+          curl -L --output ${{ github.workspace }}/llvm.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz
+          tar -xJ -C $ -xJ -C ${{ github.workspace }}/toolchains/llvm --strip-components=1 -f ${{ github.workspace }}/llvm.tar.xz
+          # 校验clang和ld.lld是否存在
+          if [ ! -f "${{ github.workspace }}/toolchains/llvm/bin/clang" ] || [ ! -f "${{ github.workspace }}/toolchains/llvm/bin/ld.lld" ]; then
+            echo "LLVM解压失败：缺少关键组件"
+            exit 1
+          fi
+          rm -f ${{ github.workspace }}/llvm.tar.xz
 
-      - name: Download & Extract Google GCC 4.9 (Workdir)
+      - name: Configure Build Env (Clang Only, Debug Mode)
         run: |
-          mkdir -p ${{ github.workspace }}/toolchains/gcc
-          curl -L https://github.com/JackA1ltman/Google-GCC-Android-4.9/archive/refs/heads/master.tar.gz | tar -xz -C ${{ github.workspace }}/toolchains/gcc --strip-components=1 2>/dev/null
-
-      - name: Configure Build Env (Stable, Disable Warnings)
-        run: |
+          # 打印调试信息
+          echo "Workspace: ${{ github.workspace }}"
+          echo "Clang Path: ${{ github.workspace }}/toolchains/llvm/bin"
+          # 仅配置Clang相关环境变量，移除所有GCC参数
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH=${{ github.workspace }}/toolchains/llvm/bin:${{ github.workspace }}/toolchains/gcc/bin:$PATH
-          export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export PATH=${{ github.workspace }}/toolchains/llvm/bin:$PATH
           export CC=clang
           export CXX=clang++
           export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          # 禁用警告转错误，提升编译容错性
           export KCFLAGS=-Wno-error
           export KBUILD_CFLAGS=-Wno-error
           export CLANG_FLAGS=-Wno-error
+          # 验证Clang工具链
+          clang --version || echo "Clang调用失败"
+          ld.lld --version || echo "ld.lld调用失败"
+          # 执行defconfig并输出详细日志
           cd ${{ github.workspace }}/kernel_src
-          make O=out chopin_defconfig 2>/dev/null
+          make O=out chopin_defconfig V=1 2>&1 | tee ${{ github.workspace }}/defconfig.log
 
-      - name: Build Kernel with All Cores (Stable)
+      - name: Build Kernel with Clang (All Cores)
         run: |
+          # 复用纯Clang环境变量
           export ARCH=arm64
           export SUBARCH=arm64
-          export PATH=${{ github.workspace }}/toolchains/llvm/bin:${{ github.workspace }}/toolchains/gcc/bin:$PATH
-          export CROSS_COMPILE=aarch64-linux-android-
-          export CROSS_COMPILE_ARM32=arm-linux-androideabi-
+          export PATH=${{ github.workspace }}/toolchains/llvm/bin:$PATH
           export CC=clang
           export CXX=clang++
           export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export KCFLAGS=-Wno-error
+          export KBUILD_CFLAGS=-Wno-error
+          export CLANG_FLAGS=-Wno-error
+          # 全核心编译内核
           cd ${{ github.workspace }}/kernel_src
-          make -j$(nproc) O=out Image.gz-dtb KCFLAGS=-Wno-error KBUILD_CFLAGS=-Wno-error CLANG_FLAGS=-Wno-error 2>&1 | tee ${{ github.workspace }}/kernel_build.log
+          make -j$(nproc) O=out Image.gz-dtb 2>&1 | tee ${{ github.workspace }}/kernel_build.log
 
       - name: Pack Kernel with AnyKernel3 (AB Partition)
         run: |
           cp ${{ github.workspace }}/kernel_src/out/arch/arm64/boot/Image.gz-dtb ${{ github.workspace }}/anykernel3/ 2>/dev/null
+          # 适配chopin设备AB分区
           sed -i 's/^device.name1=.*/device.name1=chopin/' ${{ github.workspace }}/anykernel3/anykernel.sh 2>/dev/null
           sed -i 's/^is_slot_device=.*/is_slot_device=1/' ${{ github.workspace }}/anykernel3/anykernel.sh 2>/dev/null
-          cd ${{ github.workspace }}/anykernel3
-          zip -r9 Chopin-Kernel-$(date +%Y%m%d).zip * -x .git README.md LICENSE 2>/dev/null
-          cp Chopin-Kernel-$(date +%Y%m%d).zip ${{ github.workspace }}/ 2>/dev/null
-
-      - name: Upload Kernel Image
-        uses: actions/upload-artifact@v4
-        with:
-          name: Chopin-Kernel-Image
-          path: ${{ github.workspace }}/kernel_src/out/arch/arm64/boot/Image.gz-dtb
-
-      
+          cd ${{ g
