@@ -1,4 +1,4 @@
-name: Chopin Kernel Build (Clang Minimal Fix)
+name: Chopin Kernel Build (Home Dir)
 
 on:
   workflow_dispatch:
@@ -11,74 +11,92 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - name: Clean Env (Fix Perm)
+      - name: Init Home Env
         run: |
-          # 仅清理工作目录，避免系统目录权限问题
-          rm -rf ${{ github.workspace }}/* 2>/dev/null
-          # 系统清理操作添加sudo并屏蔽警告
+          # 清理Home目录冗余文件
+          rm -rf /home/runner/* 2>/dev/null
           sudo apt clean -y 2>/dev/null
           sudo apt autoremove -y 2>/dev/null
+          # 创建编译目录
+          mkdir -p /home/runner/kernel /home/runner/toolchains
           df -h
 
-      - name: Checkout Source
+      - name: Checkout Kernel Source (Home)
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          path: kernel_src
+          path: /home/runner/kernel/src
           submodules: recursive
 
-      - name: Checkout AnyKernel3
+      - name: Checkout AnyKernel3 (Home)
         uses: actions/checkout@v4
         with:
           repository: osm0sis/AnyKernel3
-          path: anykernel3
+          path: /home/runner/kernel/anykernel3
           ref: master
 
-      - name: Install Deps (Silent)
+      - name: Install Dependencies
         run: |
           sudo apt update -y 2>/dev/null
-          sudo apt install -y bc bison build-essential ccache curl flex git libssl-dev libncurses-dev lib32z1-dev liblz4-tool lzop squashfs-tools xsltproc zip zlib1g-dev device-tree-compiler python3 binutils unzip 2>/dev/null
+          sudo apt install -y bc bison build-essential ccache curl flex git libssl-dev libncurses-dev lib32z1-dev liblz4-tool lzop squashfs-tools xsltproc zip zlib1g-dev device-tree-compiler python3 binutils unzip gcc-multilib g++-multilib 2>/dev/null
           sudo ln -sf /usr/bin/python3 /usr/bin/python
 
       - name: Python3 Adapt
         run: |
-          find ${{ github.workspace }}/kernel_src -name "*.py" -exec sed -i 's/python/python3/' {} \; 2>/dev/null
+          find /home/runner/kernel/src -name "*.py" -type f -exec sed -i 's/^#!\/usr\/bin\/env python/#!\/usr\/bin\/env python3/g' {} \; 2>/dev/null
 
-      - name: Get LLVM (Retry)
+      - name: Download LLVM (Home)
         run: |
-          mkdir -p ${{ github.workspace }}/toolchains/llvm
-          curl -L --retry 5 -o ${{ github.workspace }}/llvm.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz 2>/dev/null
-          tar -xJ -C ${{ github.workspace }}/toolchains/llvm --strip-components=1 -f ${{ github.workspace }}/llvm.tar.xz 2>/dev/null
-          [ -f "${{ github.workspace }}/toolchains/llvm/bin/clang" ] || exit 1
-          rm -f ${{ github.workspace }}/llvm.tar.xz
-          echo "${{ github.workspace }}/toolchains/llvm/bin" >> $GITHUB_PATH
+          curl -L --retry 5 -o /home/runner/toolchains/llvm.tar.xz https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz 2>/dev/null
+          tar -xJ -C /home/runner/toolchains --strip-components=1 -f /home/runner/toolchains/llvm.tar.xz 2>/dev/null
+          rm -f /home/runner/toolchains/llvm.tar.xz
+          # 添加LLVM到系统PATH
+          echo "/home/runner/toolchains/bin" >> $GITHUB_PATH
+          clang --version || echo "Clang Load Fail"
 
-      - name: Config & Build
+      - name: Config & Build (Home Dir)
         run: |
-          cd ${{ github.workspace }}/kernel_src
-          export ARCH=arm64 SUBARCH=arm64
-          export CC=clang CXX=clang++ LD=ld.lld AR=llvm-ar NM=llvm-nm OBJCOPY=llvm-objcopy OBJDUMP=llvm-objdump STRIP=llvm-strip
-          export KCFLAGS=-Wno-error KBUILD_CFLAGS=-Wno-error CLANG_FLAGS=-Wno-error
-          make O=out defconfig V=1 2>/dev/null
-          [ -f "out/.config" ] || exit 1
+          cd /home/runner/kernel/src || { echo "Dir Enter Fail"; exit 1; }
+          # 导出环境变量
+          export ARCH=arm64
+          export SUBARCH=arm64
+          export CC=clang
+          export CXX=clang++
+          export LD=ld.lld
+          export AR=llvm-ar
+          export NM=llvm-nm
+          export OBJCOPY=llvm-objcopy
+          export OBJDUMP=llvm-objdump
+          export STRIP=llvm-strip
+          export KCFLAGS=-Wno-error
+          export KBUILD_CFLAGS=-Wno-error
+          export CLANG_FLAGS=-Wno-error
+          # 生成配置
+          make O=out defconfig V=1 2>&1 | tee /home/runner/defconfig.log
+          [ -f "out/.config" ] || { echo "Defconfig Fail"; exit 1; }
+          # 编译内核
           for TARGET in Image.gz-dtb Image-dtb Image; do
-            make -j$(nproc) O=out $TARGET 2>/dev/null && export KERNEL_TARGET=$TARGET && break
+            make -j$(nproc) O=out $TARGET 2>&1 | tee /home/runner/build_$TARGET.log
+            if [ -f "out/arch/arm64/boot/$TARGET" ]; then
+              export KERNEL_TARGET=$TARGET
+              break
+            fi
           done
-          [ -f "out/arch/arm64/boot/$KERNEL_TARGET" ] || exit 1
+          [ -n "$KERNEL_TARGET" ] || { echo "Build Fail"; exit 1; }
 
-      - name: Pack
+      - name: Pack Kernel (Home)
         run: |
-          cp ${{ github.workspace }}/kernel_src/out/arch/arm64/boot/$KERNEL_TARGET ${{ github.workspace }}/anykernel3/Image.gz-dtb 2>/dev/null
-          sed -i -e 's/^device.name1=.*/device.name1=chopin/' -e 's/^is_slot_device=.*/is_slot_device=1/' ${{ github.workspace }}/anykernel3/anykernel.sh 2>/dev/null
-          cd ${{ github.workspace }}/anykernel3
-          zip -r9 Chopin-Kernel-$(date +%Y%m%d).zip * -x .git* README.md LICENSE 2>/dev/null
-          cp *.zip ${{ github.workspace }}/ 2>/dev/null
+          cp /home/runner/kernel/src/out/arch/arm64/boot/$KERNEL_TARGET /home/runner/kernel/anykernel3/Image.gz-dtb 2>/dev/null
+          sed -i -e 's/^device.name1=.*/device.name1=chopin/' -e 's/^is_slot_device=.*/is_slot_device=1/' /home/runner/kernel/anykernel3/anykernel.sh 2>/dev/null
+          cd /home/runner/kernel/anykernel3 && zip -r9 Chopin-Kernel-$(date +%Y%m%d).zip * -x .git* README.md LICENSE 2>/dev/null
+          cp *.zip /home/runner/ 2>/dev/null
 
-      - name: Upload
+      - name: Upload All Files
         uses: actions/upload-artifact@v4
         with:
-          name: Chopin-Kernel-Build
+          name: Chopin-Kernel-Home-Build
           path: |
-            ${{ github.workspace }}/*.zip
-            ${{ github.workspace }}/kernel_src/out/arch/arm64/boot/*
+            /home/runner/*.zip
+            /home/runner/kernel/src/out/arch/arm64/boot/*
+            /home/runner/*.log
           retention-days: 7
