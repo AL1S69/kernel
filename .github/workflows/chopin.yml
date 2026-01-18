@@ -4,9 +4,10 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
-  workflow_dispatch:
+  workflow_dispatch: # 手动触发编译
 
 env:
+  # 核心环境变量（完全保留你的参数）
   ARCH: arm64
   SUBARCH: arm64
   CC: clang
@@ -17,51 +18,59 @@ env:
   THREADS: 6
   OUT_DIR: out
   CONFIG_FILE: chopin_user_defconfig
+  # 源码/工具链地址（你的指定地址）
   KERNEL_REPO: https://github.com/ChopinKernels/kernel_xiaomi_chopin_android_S.git
   LLVM_URL: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.0/LLVM-19.1.0-Linux-X64.tar.xz
   LLVM_DIR: LLVM-19.1.0-Linux-X64
 
 jobs:
   build_kernel:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-24.04 # 新版Ubuntu核心，兼容22.04/24.04，替代旧版20.04
     steps:
-      - name: 1. 拉取内核源码
+      - name: 1. 拉取内核源码（浅克隆提速）
         uses: actions/checkout@v4
         with:
           repository: ChopinKernels/kernel_xiaomi_chopin_android_S
           path: kernel
           fetch-depth: 1
 
-      - name: 2. 安装系统依赖包
+      - name: 2. 安装系统依赖包（适配新版Ubuntu，修复包名/依赖兼容）
         run: |
-          sudo apt-get update -y
-          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 libghc-bzlib-dev squashfs-tools pngcrush schedtool dpkg-dev make optipng maven libssl-dev pwgen libswitch-perl policycoreutils minicom libxml-sax-base-perl libxml-simple-perl bc libc6-dev-i386 libx11-dev lib32z-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 zstd libc6 binutils libc6-dev-i386 gcc g++ p7zip p7zip-full -y
+          sudo apt-get update -y && sudo apt-get upgrade -y
+          # 保留你所有依赖，适配新版Ubuntu（移除废弃包，补全兼容依赖）
+          sudo apt-get install -y git ccache automake flex lzop bison gperf build-essential zip curl zlib1g-dev g++-multilib libxml2-utils bzip2 libbz2-dev libbz2-1.0 squashfs-tools pngcrush schedtool dpkg-dev make optipng maven libssl-dev pwgen policycoreutils minicom bc libc6-dev-i386 libx11-dev lib32z1-dev libgl1-mesa-dev xsltproc unzip device-tree-compiler python3 zstd libc6 binutils gcc g++ p7zip p7zip-full libperl5.36 libxml-simple-perl libxml-sax-base-perl -y
+          # 新版Ubuntu补装跨架构编译依赖
+          sudo dpkg --add-architecture i386 && sudo apt-get update -y
+          sudo apt-get install -y libc6:i386
 
-      - name: 3. 下载并解压LLVM19工具链
+      - name: 3. 下载并解压LLVM19工具链（你的指定版本，适配新系统）
         run: |
           cd kernel
           curl -LSs -o llvm.tar.xz ${{ env.LLVM_URL }}
-          tar -xf llvm.tar.xz
+          tar -xf llvm.tar.xz --no-same-owner # 新版Ubuntu修复解压权限
+          # 工具链加入PATH（全局生效）
           echo "PATH=$(pwd)/${{ env.LLVM_DIR }}/bin:$PATH" >> $GITHUB_ENV
+          # 验证工具链
+          clang --version && llvm-config --version
 
-      - name: 4. 集成KernelSU v0.9.5
+      - name: 4. 集成KernelSU v0.9.5（保留你的原始命令）
         run: |
           cd kernel
           curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -s ${{ env.KSU_VERSION }}
 
-      - name: 5. 清理编译环境
+      - name: 5. 清理编译环境（你的原始命令，不变）
         run: |
           cd kernel
           make clean && make mrproper
           rm -rf kernel.log ${{ env.OUT_DIR }}
           mkdir -p ${{ env.OUT_DIR }}
 
-      - name: 6. 生成编译参数
+      - name: 6. 生成编译参数（完全保留你的args）
         run: |
           cd kernel
           echo "ARGS=-j${{ env.THREADS }} ARCH=${{ env.ARCH }} SUBARCH=${{ env.SUBARCH }} O=${{ env.OUT_DIR }} CC=${{ env.CC }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} CROSS_COMPILE_ARM32=${{ env.CROSS_COMPILE_ARM32 }} CLANG_TRIPLE=${{ env.CLANG_TRIPLE }}" >> $GITHUB_ENV
 
-      - name: 7. 加载配置文件（添加KPROBES配置）
+      - name: 7. 加载配置文件 + 逐行添加KPROBES配置（核心要求）
         run: |
           cd kernel
           make ${{ env.ARGS }} ${{ env.CONFIG_FILE }} \
@@ -69,7 +78,7 @@ jobs:
           CONFIG_HAVE_KPROBES=y \
           CONFIG_KPROBE_EVENTS=y
 
-      - name: 8. 编译内核（添加KPROBES配置）
+      - name: 8. 编译内核 + 逐行添加KPROBES配置（核心要求）
         run: |
           cd kernel
           make ${{ env.ARGS }} \
@@ -78,11 +87,16 @@ jobs:
           CONFIG_KPROBE_EVENTS=y \
           2>&1 | tee kernel.log
 
-      - name: 9. 上传编译产物
+      - name: 9. 验证编译产物
+        run: |
+          cd kernel
+          ls -l out/arch/arm64/boot/Image.gz && echo "✅ 编译成功！"
+
+      - name: 10. 上传编译产物
         uses: actions/upload-artifact@v4
         with:
-          name: Chopin-Kernel-KSU-v0.9.5-KPROBES
+          name: Chopin-Kernel-KSU-v0.9.5-KPROBES-Ubuntu2404
           path: |
             kernel/out/arch/arm64/boot/Image.gz
             kernel/kernel.log
-          if-no-files-found: error
+          if-no-files-found: error # 无产物标记失败
